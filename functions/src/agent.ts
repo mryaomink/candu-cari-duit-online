@@ -24,7 +24,10 @@ const ai = new GoogleGenAI({
   location,
 });
 
-const INTENT_MODEL = "gemini-3-flash-preview";
+// `gemini-3-flash-preview` is preview-gated and silently 404s on projects
+// without allow-list access. Use the stable GA model for both paths until
+// preview is verified available for this project.
+const INTENT_MODEL = "gemini-2.5-flash";
 const TRENDS_MODEL = "gemini-2.5-flash";
 
 const INTENT_TOOLS: Tool[] = [
