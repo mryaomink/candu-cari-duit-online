@@ -1,29 +1,71 @@
 /**
  * agent.ts
- * CANDU Search Agent powered by the Gemini Enterprise Agent Platform
- * via the official `@google-cloud/vertexai` SDK.
+ * CANDU Search Agent powered by the Gemini Enterprise Agent Platform via the
+ * official Google Gen AI SDK (`@google/genai`).
  *
- * Encapsulates the structured-intent extraction and regional-trends
- * synthesis into a reusable class so that callable functions
- * (e.g. `searchCreators`) stay focused on orchestration.
+ * Encapsulates structured-intent extraction and regional-trends synthesis
+ * into a reusable class so callable functions (e.g. `searchCreators`) stay
+ * focused on orchestration.
+ *
+ * Auth: ADC. The SDK reads `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`
+ * (and may default `GOOGLE_GENAI_USE_VERTEXAI=True`) from the environment.
  */
-import {
-  VertexAI,
-  SchemaType,
-  type GenerativeModel,
-  type GenerateContentResult,
-} from "@google-cloud/vertexai";
+import { GoogleGenAI, Type, type Tool } from "@google/genai";
 
 const projectId =
-  process.env.VERTEX_AI_PROJECT_ID ||
+  process.env.GOOGLE_CLOUD_PROJECT ||
   process.env.GCLOUD_PROJECT ||
   "candu-project";
-const vertexLocation = process.env.VERTEX_AI_LOCATION || "global";
+const location = process.env.GOOGLE_CLOUD_LOCATION || "global";
 
-const vertexAI = new VertexAI({
+const ai = new GoogleGenAI({
+  vertexai: true,
   project: projectId,
-  location: vertexLocation,
+  location,
 });
+
+const INTENT_MODEL = "gemini-3-flash-preview";
+const TRENDS_MODEL = "gemini-2.5-flash";
+
+const INTENT_TOOLS: Tool[] = [
+  {
+    functionDeclarations: [
+      {
+        name: "parse_search_intent",
+        description:
+          "Parse user search query into structured intent for the CANDU creator marketplace.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            cleanPrompt: {
+              type: Type.STRING,
+              description: "Essential keywords for vector search",
+            },
+            budgetLimit: {
+              type: Type.NUMBER,
+              description:
+                "Maximum budget in Rupiah, null if not specified",
+            },
+            isUrgent: {
+              type: Type.BOOLEAN,
+              description: "Whether the request is urgent",
+            },
+            skills: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "Extracted skills/requirements",
+            },
+            industry: {
+              type: Type.STRING,
+              description: "Detected industry category",
+            },
+          },
+          required: ["cleanPrompt"],
+        },
+      },
+    ],
+  },
+];
 
 export interface QueryIntent {
   cleanPrompt: string;
@@ -49,63 +91,7 @@ const FALLBACK_TRENDS: RegionalTrends = {
   detectedIndustry: "Kreatif / Jasa Umum",
 };
 
-/**
- * Try to extract the first JSON-encoded text part from a Vertex
- * `GenerateContentResult`. Returns `null` if no decodable text is present.
- */
-function extractText(result: GenerateContentResult): string | null {
-  const text = result.response?.candidates?.[0]?.content?.parts?.[0]?.text;
-  return typeof text === "string" && text.trim().length > 0 ? text : null;
-}
-
 export class CanduSearchAgent {
-  private readonly intentModel: GenerativeModel;
-
-  constructor() {
-    this.intentModel = vertexAI.getGenerativeModel({
-      model: "gemini-3.1-pro",
-      tools: [
-        {
-          functionDeclarations: [
-            {
-              name: "parse_search_intent",
-              description:
-                "Parse user search query into structured intent for the CANDU creator marketplace.",
-              parameters: {
-                type: SchemaType.OBJECT,
-                properties: {
-                  cleanPrompt: {
-                    type: SchemaType.STRING,
-                    description: "Essential keywords for vector search",
-                  },
-                  budgetLimit: {
-                    type: SchemaType.NUMBER,
-                    description:
-                      "Maximum budget in Rupiah, null if not specified",
-                  },
-                  isUrgent: {
-                    type: SchemaType.BOOLEAN,
-                    description: "Whether the request is urgent",
-                  },
-                  skills: {
-                    type: SchemaType.ARRAY,
-                    items: { type: SchemaType.STRING },
-                    description: "Extracted skills/requirements",
-                  },
-                  industry: {
-                    type: SchemaType.STRING,
-                    description: "Detected industry category",
-                  },
-                },
-                required: ["cleanPrompt"],
-              },
-            },
-          ],
-        },
-      ],
-    });
-  }
-
   /**
    * Convert a free-form user prompt into structured `QueryIntent`.
    * Falls back to a safe identity-mapped intent on failure.
@@ -124,15 +110,17 @@ Extract:
 - Industry category`;
 
     try {
-      const result = await this.intentModel.generateContent({
-        contents: [{ role: "user", parts: [{ text: sysPrompt }] }],
-        generationConfig: {
+      const response = await ai.models.generateContent({
+        model: INTENT_MODEL,
+        contents: sysPrompt,
+        config: {
           responseMimeType: "application/json",
           temperature: 0.1,
+          tools: INTENT_TOOLS,
         },
       });
 
-      const text = extractText(result);
+      const text = response.text;
       if (text) {
         const parsed = JSON.parse(text) as Partial<QueryIntent>;
         return {
@@ -158,32 +146,29 @@ Extract:
   }
 
   /**
-   * Synthesize 2 short regional industry trends + a one-line match
-   * reasoning for the requested city. Falls back to a static payload.
+   * Synthesize 2 short regional industry trends + a one-line match reasoning
+   * for the requested city. Falls back to a static payload.
    */
   async generateRegionalTrends(
     prompt: string,
     city: string,
   ): Promise<RegionalTrends> {
-    const trendsModel = vertexAI.getGenerativeModel({
-      model: "gemini-3.1-flash-lite",
-    });
-
     const sysPrompt = `Analyze local business trends for search: "${prompt}" in ${city}.
 Provide 2 current industry trends and 1 sentence reasoning for creator matching.
 Format: {"trends": ["tren1", "tren2"], "matchReasoning": "karena...", "detectedIndustry": "..."}`;
 
     try {
-      const result = await trendsModel.generateContent({
-        contents: [{ role: "user", parts: [{ text: sysPrompt }] }],
-        generationConfig: {
+      const response = await ai.models.generateContent({
+        model: TRENDS_MODEL,
+        contents: sysPrompt,
+        config: {
           responseMimeType: "application/json",
           temperature: 0.7,
           maxOutputTokens: 250,
         },
       });
 
-      const text = extractText(result);
+      const text = response.text;
       if (text) {
         const parsed = JSON.parse(text) as Partial<RegionalTrends>;
         return {

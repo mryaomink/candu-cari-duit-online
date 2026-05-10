@@ -3,8 +3,7 @@ import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { setGlobalOptions } from "firebase-functions/v2";
-import { GoogleAuth } from "google-auth-library";
-import { VertexAI } from "@google-cloud/vertexai";
+import { GoogleGenAI } from "@google/genai";
 
 import { CanduSearchAgent } from "./agent";
 
@@ -15,50 +14,33 @@ const db = getFirestore("candu");
 // Primary deploy region
 setGlobalOptions({ region: "asia-southeast2" });
 
+// Per Gemini Enterprise Agent Platform docs:
+//   GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION (default "global"),
+//   GOOGLE_GENAI_USE_VERTEXAI=True. ADC handles auth automatically.
 const projectId =
-  process.env.VERTEX_AI_PROJECT_ID ||
+  process.env.GOOGLE_CLOUD_PROJECT ||
   process.env.GCLOUD_PROJECT ||
   "candu-project";
-const vertexLocation = process.env.VERTEX_AI_LOCATION || "global";
-const apiEndpoint = "aiplatform.googleapis.com";
+const location = process.env.GOOGLE_CLOUD_LOCATION || "global";
 
-// ─── Vertex AI client (Gemini Enterprise Agent Platform) ────────────────────
-const vertexAI = new VertexAI({
+// ─── Google Gen AI SDK client (Gemini Enterprise Agent Platform) ────────────
+const ai = new GoogleGenAI({
+  vertexai: true,
   project: projectId,
-  location: vertexLocation,
+  location,
 });
 
-const generativeModel = vertexAI.getGenerativeModel({
-  model: "gemini-3.1-pro",
-});
-
-const flashModel = vertexAI.getGenerativeModel({
-  model: "gemini-3.1-flash-lite",
-});
+const PRO_MODEL = "gemini-3-flash-preview";
+const FLASH_MODEL = "gemini-2.5-flash";
+const EMBEDDING_MODEL = "text-embedding-004";
 
 // Reusable agent instance for structured intent + regional trends.
 const searchAgent = new CanduSearchAgent();
 
-// ─── Embeddings (REST via ADC) ──────────────────────────────────────────────
-//
-// The `@google-cloud/vertexai` SDK currently exposes generative-model
-// surface only. Embedding generation still uses the Vertex AI REST API,
-// authenticated via Application Default Credentials (ADC) through
-// `google-auth-library`. The REST call benefits from the same identity
-// resolution as the SDK, so this keeps a single auth model.
-const auth = new GoogleAuth({
-  scopes: "https://www.googleapis.com/auth/cloud-platform",
-});
-
-interface VertexEmbeddingResponse {
-  predictions?: Array<{
-    embeddings?: { values?: number[] };
-  }>;
-}
-
 /**
  * generateEmbedding
- * Converts arbitrary text into a 768-dim text-embedding-004 vector.
+ * Converts arbitrary text into a 768-dim text-embedding-004 vector via the
+ * Google Gen AI SDK.
  *
  * Returns:
  *   - `[]`   when the input is empty/whitespace-only (semantically valid).
@@ -71,29 +53,17 @@ async function generateEmbedding(text: string): Promise<number[] | null> {
   if (!cleanText.trim()) return [];
 
   try {
-    const client = await auth.getClient();
-    const url = `https://${apiEndpoint}/v1/projects/${projectId}/locations/${vertexLocation}/publishers/google/models/text-embedding-004:predict`;
-
-    const payload = {
-      instances: [
-        {
-          content: cleanText,
-          task_type: "RETRIEVAL_DOCUMENT",
-        },
-      ],
-    };
-
-    const res = await client.request<VertexEmbeddingResponse>({
-      url,
-      method: "POST",
-      data: payload,
+    const response = await ai.models.embedContent({
+      model: EMBEDDING_MODEL,
+      contents: cleanText,
+      config: { taskType: "RETRIEVAL_DOCUMENT" },
     });
 
-    const values = res.data?.predictions?.[0]?.embeddings?.values;
+    const values = response.embeddings?.[0]?.values;
     if (values && values.length > 0) {
       return values;
     }
-    console.error("Vertex embedding response missing values:", res.data);
+    console.error("Vertex embedding response missing values:", response);
     return null;
   } catch (err) {
     console.error("Vertex AI embedding failure:", err);
@@ -103,7 +73,7 @@ async function generateEmbedding(text: string): Promise<number[] | null> {
 
 /**
  * distillCreatorContent
- * Leverages Gemini (via Vertex AI SDK) to strip noise and define the
+ * Leverages Gemini (via the Gen AI SDK) to strip noise and define the
  * essential vector-indexing text from raw bio/skills.
  */
 async function distillCreatorContent(
@@ -116,13 +86,13 @@ Skills: ${skills.join(", ")}
 Output ONLY the essential summary text separated by commas.`;
 
   try {
-    const result = await flashModel.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: 150 },
+    const response = await ai.models.generateContent({
+      model: FLASH_MODEL,
+      contents: prompt,
+      config: { temperature: 0.2, maxOutputTokens: 150 },
     });
 
-    const text =
-      result.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    const text = response.text?.trim();
     if (text) return text;
   } catch (err) {
     console.warn("Distillation failed, using fallback:", err);
@@ -279,7 +249,6 @@ export const searchCreators = onCall(
       const snapshot = await vectorQuery.get();
       const results = snapshot.docs.map((doc, idx) => {
         const d = doc.data();
-        // Strip the embedding before returning to clients.
         const { embedding: _embedding, ...publicData } = d;
         void _embedding;
         return {
@@ -394,7 +363,8 @@ export const processEscrow = onCall(async (request) => {
 });
 
 /**
- * Callable AI Utility: Expands a user's simple keywords into a professional creative bio.
+ * Callable AI Utility: Expands a user's simple keywords into a professional
+ * creative bio.
  */
 export const enhanceBio = onCall(async (request) => {
   if (!request.auth) {
@@ -419,13 +389,13 @@ Input Pengguna: "${rawInput}"
 Balasan Anda HANYA berisi teks biografi tersebut, tanpa embel-embel percakapan lain.`;
 
   try {
-    const result = await generativeModel.generateContent({
-      contents: [{ role: "user", parts: [{ text: sysPrompt }] }],
-      generationConfig: { temperature: 0.8, maxOutputTokens: 200 },
+    const response = await ai.models.generateContent({
+      model: PRO_MODEL,
+      contents: sysPrompt,
+      config: { temperature: 0.8, maxOutputTokens: 200 },
     });
 
-    const enhancedText =
-      result.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    const enhancedText = response.text?.trim();
     if (enhancedText) {
       return { enhancedText };
     }
