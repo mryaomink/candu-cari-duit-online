@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { subscribeToAuth, getAppUser } from '@/lib/authService';
 import { getFeatureFlags } from '@/lib/featureFlags';
+import Toast from '@/components/ui/Toast';
 
 // Silence harmless upstream Three.js deprecation warnings leaking into console
 if (typeof window !== 'undefined') {
@@ -68,5 +69,10 @@ export default function AppProvider({ children }: { children: React.ReactNode })
     return unsubscribe;
   }, [setAuthLoading, setFirebaseUser, setUser]);
 
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      <Toast />
+    </>
+  );
 }

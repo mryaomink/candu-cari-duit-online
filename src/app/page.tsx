@@ -2,7 +2,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
-import Toast from '@/components/ui/Toast';
 import { useAppStore, useUIState, useFirebaseUser, useLocation } from '@/store/useAppStore';
 import { getCurrentLocation, reverseGeocode } from '@/lib/geo';
 import { fetchAllCreators } from '@/lib/searchService';
@@ -75,14 +74,16 @@ function LocationBootstrap() {
 function DataBootstrap() {
   const { lat, lng, locationLoading } = useLocation();
   const firebaseUser = useFirebaseUser();
+  const isAuthLoading = useAppStore((s) => s.isAuthLoading);
   const setNodes = useAppStore((s) => s.setNodes);
   useEffect(() => {
-    if (!locationLoading && lat !== null && lng !== null) {
-      fetchAllCreators(lat, lng, firebaseUser?.uid)
-        .then((liveNodes) => { setNodes(liveNodes); })
-        .catch((err) => { logError('FIRESTORE_READ_ERROR', 'Failed', { err }); });
-    }
-  }, [lat, lng, locationLoading, setNodes, firebaseUser?.uid]);
+    if (locationLoading || lat === null || lng === null) return;
+    if (isAuthLoading) return;
+    if (!firebaseUser) return;
+    fetchAllCreators(lat, lng, firebaseUser.uid)
+      .then((liveNodes) => { setNodes(liveNodes); })
+      .catch((err) => { logError('FIRESTORE_READ_ERROR', 'Failed', { err }); });
+  }, [lat, lng, locationLoading, setNodes, isAuthLoading, firebaseUser]);
   return null;
 }
 
@@ -115,7 +116,6 @@ export default function HomePage() {
       {isPortfolioOpen && <PortfolioModal />}
       {isAuthModalOpen && <AuthModal />}
       <OnboardingFlow />
-      <Toast />
     </AppProvider>
   );
 }
