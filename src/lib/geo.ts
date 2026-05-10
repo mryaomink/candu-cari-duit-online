@@ -48,18 +48,32 @@ export function latLngToRadarPosition(
 }
 
 /**
- * Get user's current GPS location via browser Geolocation API.
- * Returns null if denied or unavailable.
+ * Geolocation error codes mirroring the W3C `GeolocationPositionError` interface,
+ * plus an extra `0` for "API unsupported by the browser".
+ *  0 = unsupported, 1 = permission denied, 2 = position unavailable, 3 = timeout.
  */
-export function getCurrentLocation(): Promise<{ lat: number; lng: number } | null> {
+export type GeolocationErrorCode = 0 | 1 | 2 | 3 | null;
+
+export interface GeolocationResult {
+  lat: number | null;
+  lng: number | null;
+  error: GeolocationErrorCode;
+}
+
+/**
+ * Get user's current GPS location via browser Geolocation API.
+ * Always resolves with a `GeolocationResult` so callers can distinguish
+ * permission denials from timeouts and other failure modes.
+ */
+export function getCurrentLocation(): Promise<GeolocationResult> {
   return new Promise((resolve) => {
     if (!navigator.geolocation) {
-      resolve(null);
+      resolve({ lat: null, lng: null, error: 0 });
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => resolve(null),
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, error: null }),
+      (err) => resolve({ lat: null, lng: null, error: err.code as GeolocationErrorCode }),
       { timeout: 8000, enableHighAccuracy: true }
     );
   });

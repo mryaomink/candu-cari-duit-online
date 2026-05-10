@@ -4,320 +4,309 @@ import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { GoogleAuth } from "google-auth-library";
+import { VertexAI } from "@google-cloud/vertexai";
+
+import { CanduSearchAgent } from "./agent";
 
 // Initialize app targeting named db
 initializeApp();
-const db = getFirestore("candu"); 
+const db = getFirestore("candu");
 
 // Primary deploy region
 setGlobalOptions({ region: "asia-southeast2" });
 
-const projectId = process.env.VERTEX_AI_PROJECT_ID || process.env.GCLOUD_PROJECT || "candu-project";
-const vertexLocation = "global"; // OVERRIDE TO GLOBAL PER EMPIRICAL LOGS
-const apiEndpoint = "aiplatform.googleapis.com"; 
+const projectId =
+  process.env.VERTEX_AI_PROJECT_ID ||
+  process.env.GCLOUD_PROJECT ||
+  "candu-project";
+const vertexLocation = process.env.VERTEX_AI_LOCATION || "global";
+const apiEndpoint = "aiplatform.googleapis.com";
 
+// ─── Vertex AI client (Gemini Enterprise Agent Platform) ────────────────────
+const vertexAI = new VertexAI({
+  project: projectId,
+  location: vertexLocation,
+});
+
+const generativeModel = vertexAI.getGenerativeModel({
+  model: "gemini-3.1-pro",
+});
+
+const flashModel = vertexAI.getGenerativeModel({
+  model: "gemini-3.1-flash-lite",
+});
+
+// Reusable agent instance for structured intent + regional trends.
+const searchAgent = new CanduSearchAgent();
+
+// ─── Embeddings (REST via ADC) ──────────────────────────────────────────────
+//
+// The `@google-cloud/vertexai` SDK currently exposes generative-model
+// surface only. Embedding generation still uses the Vertex AI REST API,
+// authenticated via Application Default Credentials (ADC) through
+// `google-auth-library`. The REST call benefits from the same identity
+// resolution as the SDK, so this keeps a single auth model.
 const auth = new GoogleAuth({
   scopes: "https://www.googleapis.com/auth/cloud-platform",
 });
 
+interface VertexEmbeddingResponse {
+  predictions?: Array<{
+    embeddings?: { values?: number[] };
+  }>;
+}
+
 /**
  * generateEmbedding
- * Production-hardened wrapper calling the text-embedding-004 REST endpoint via authenticated client.
- * Standardized approach bypassing varying SDK sub-method wrappers.
+ * Converts arbitrary text into a 768-dim text-embedding-004 vector.
+ *
+ * Returns:
+ *   - `[]`   when the input is empty/whitespace-only (semantically valid).
+ *   - `null` when the upstream Vertex API call fails. Callers should
+ *            distinguish these cases to avoid persisting empty vectors
+ *            on transient errors.
  */
-async function generateEmbedding(text: string): Promise<number[]> {
+async function generateEmbedding(text: string): Promise<number[] | null> {
   const cleanText = text.substring(0, 2500).replace(/\n/g, " ");
   if (!cleanText.trim()) return [];
 
   try {
     const client = await auth.getClient();
     const url = `https://${apiEndpoint}/v1/projects/${projectId}/locations/${vertexLocation}/publishers/google/models/text-embedding-004:predict`;
-    
+
     const payload = {
-      instances: [{ 
-        content: cleanText,
-        task_type: "RETRIEVAL_DOCUMENT" 
-      }]
+      instances: [
+        {
+          content: cleanText,
+          task_type: "RETRIEVAL_DOCUMENT",
+        },
+      ],
     };
 
-    const res = await client.request<any>({
+    const res = await client.request<VertexEmbeddingResponse>({
       url,
       method: "POST",
       data: payload,
     });
 
-    const data = res.data;
-    if (data?.predictions?.[0]?.embeddings?.values) {
-      return data.predictions[0].embeddings.values; // Typical response mapping for 004
+    const values = res.data?.predictions?.[0]?.embeddings?.values;
+    if (values && values.length > 0) {
+      return values;
     }
-    throw new Error("Unexpected Vertex Response format");
+    console.error("Vertex embedding response missing values:", res.data);
+    return null;
   } catch (err) {
-    console.error("Vertex API failure:", err);
-    return [];
+    console.error("Vertex AI embedding failure:", err);
+    return null;
   }
-}
-
-/**
- * generateRegionalTrends
- * Harnesses Gemini 1.5 Flash via Vertex REST to derive RAG context regarding 
- * local business dynamics matching the prompt & region.
- */
-async function generateRegionalTrends(prompt: string, city: string = "Indonesia"): Promise<any> {
-  const models = [
-    "gemini-3.1-flash-lite", // CONFIRMED WORKING MODEL
-    "gemini-3.1-pro", 
-    "gemini-1.5-flash"
-  ];
-
-  const requestBody = {
-    contents: [{
-      role: "user",
-      parts: [{
-        text: `Analisis kebutuhan tren bisnis lokal singkat untuk pencarian: "${prompt}" di daerah ${city}. 
-        Berikan 2 poin tren industri saat ini dan 1 kalimat alasan pencocokan profil kreator yang paling logis untuk platform Candu.
-        Format jawaban JSON harus: {"trends": ["tren1", "tren2"], "matchReasoning": "karena...", "detectedIndustry": "..."}`
-      }]
-    }],
-    generationConfig: {
-      responseMimeType: "application/json",
-      temperature: 0.7,
-      maxOutputTokens: 250
-    }
-  };
-
-  // Loop cascading recovery through available tiers
-  for (const modelName of models) {
-    try {
-      const client = await auth.getClient();
-      const url = `https://${apiEndpoint}/v1/projects/${projectId}/locations/${vertexLocation}/publishers/google/models/${modelName}:generateContent`;
-      
-      console.log(`Attempting trend RAG synthesis with model: ${modelName}`);
-      const res = await client.request<any>({
-        url,
-        method: "POST",
-        data: requestBody
-      });
-
-      const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) {
-        return JSON.parse(text);
-      }
-    } catch (err: any) {
-      console.warn(`Model ${modelName} inference failure (Attempting next fallback...):`, err.message || err);
-      // Continue loop iteration to fallback
-    }
-  }
-
-  // Final hardcoded recovery should all tiers suffer total outage
-  console.error("All GenAI Synthesis tiers exhausted.");
-  return { 
-    trends: ["Digitalisasi layanan mandiri", "Kebutuhan konten lokal berkualitas"], 
-    matchReasoning: "Berdasarkan pemetaan riwayat proyek dan kedekatan geografis.", 
-    detectedIndustry: "Kreatif / Jasa Umum" 
-  };
 }
 
 /**
  * distillCreatorContent
- * Leverages LLM to strip noise and define essential vector text from raw bio/skills.
+ * Leverages Gemini (via Vertex AI SDK) to strip noise and define the
+ * essential vector-indexing text from raw bio/skills.
  */
-async function distillCreatorContent(bio: string, skills: string[]): Promise<string> {
-  const models = ["gemini-3.1-flash-lite", "gemini-3.1-pro", "gemini-1.5-flash"];
-  const prompt = `Anda adalah AI ekstraktor entitas profesional. Ringkas profil kreator berikut menjadi daftar kata kunci/kemampuan inti yang PADAT untuk pencocokan sistem. Hapus kata sambung tidak penting.
-  Bio: ${bio}
-  Skills: ${skills.join(", ")}
-  Keluarkan HANYA ringkasan teks esensial dipisahkan koma.`;
+async function distillCreatorContent(
+  bio: string,
+  skills: string[],
+): Promise<string> {
+  const prompt = `You are a professional entity extractor. Summarize the creator profile into a concise list of core keywords/capabilities for system matching. Remove unnecessary connector words.
+Bio: ${bio}
+Skills: ${skills.join(", ")}
+Output ONLY the essential summary text separated by commas.`;
 
-  for (const m of models) {
-    try {
-      const client = await auth.getClient();
-      const url = `https://${apiEndpoint}/v1/projects/${projectId}/locations/${vertexLocation}/publishers/google/models/${m}:generateContent`;
-      const res = await client.request<any>({
-        url, method: "POST",
-        data: {
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 150 }
-        }
-      });
-      const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) return text;
-    } catch (err) {
-      console.warn(`Distillation fail on ${m}, retrying fallback.`);
-    }
+  try {
+    const result = await flashModel.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 150 },
+    });
+
+    const text =
+      result.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (text) return text;
+  } catch (err) {
+    console.warn("Distillation failed, using fallback:", err);
   }
+
   return `${bio} ${skills.join(", ")}`;
 }
 
 /**
  * onCreatorProfileWrite
  * Trigger re-computation of search vector when bio or metadata text changes.
- * NOW with Smart Distillation Stage.
  */
-export const onCreatorProfileWrite = onDocumentWritten({
-  document: "creators/{creatorId}",
-  database: "candu" // Explicitly targeting the named db
-}, async (event) => {
-  const beforeData = event.data?.before.data();
-  const afterData = event.data?.after.data();
+export const onCreatorProfileWrite = onDocumentWritten(
+  {
+    document: "creators/{creatorId}",
+    database: "candu",
+  },
+  async (event) => {
+    const beforeData = event.data?.before.data();
+    const afterData = event.data?.after.data();
 
-  if (!afterData) return; // Deletions handled by index
+    if (!afterData) return; // Deletions handled by index
 
-  const compositeText = [
-    afterData.displayName || "",
-    afterData.bio || "",
-    ...(afterData.skills || [])
-  ].join(" | ");
+    const compositeText = [
+      afterData.displayName || "",
+      afterData.bio || "",
+      ...(afterData.skills || []),
+    ].join(" | ");
 
-  const oldComposite = beforeData ? [
-    beforeData.displayName || "",
-    beforeData.bio || "",
-    ...(beforeData.skills || [])
-  ].join(" | ") : "";
+    const oldComposite = beforeData
+      ? [
+          beforeData.displayName || "",
+          beforeData.bio || "",
+          ...(beforeData.skills || []),
+        ].join(" | ")
+      : "";
 
-  if (compositeText === oldComposite && beforeData?.embedding) {
-    console.log("No fundamental text changes detected.");
-    return;
-  }
+    if (compositeText === oldComposite && beforeData?.embedding) {
+      console.log("No fundamental text changes detected.");
+      return;
+    }
 
-  console.log(`Step 1: Distilling semantics for creator ${event.params.creatorId}...`);
-  
-  // AI STEP: Extract essence using Gemini to clear noise before vectoring
-  const essentialText = await distillCreatorContent(afterData.bio || "", afterData.skills || []);
-  const finalIndexingText = `${afterData.displayName} | ${essentialText}`;
+    console.log(
+      `Step 1: Distilling semantics for creator ${event.params.creatorId}...`,
+    );
 
-  console.log(`Step 2: Vectorizing distilled index: ${finalIndexingText.substring(0, 50)}...`);
-  const embedding = await generateEmbedding(finalIndexingText);
+    const essentialText = await distillCreatorContent(
+      afterData.bio || "",
+      afterData.skills || [],
+    );
+    const finalIndexingText = `${afterData.displayName} | ${essentialText}`;
 
-  if (embedding.length > 0) {
+    console.log(
+      `Step 2: Vectorizing distilled index: ${finalIndexingText.substring(
+        0,
+        50,
+      )}...`,
+    );
+    const embedding = await generateEmbedding(finalIndexingText);
+
+    if (embedding === null) {
+      console.error(
+        `Embedding generation FAILED for ${event.params.creatorId}; skipping write to avoid clobbering existing vector.`,
+      );
+      return;
+    }
+
+    if (embedding.length === 0) {
+      console.warn(
+        `Empty composite text for ${event.params.creatorId}; no vector persisted.`,
+      );
+      return;
+    }
+
     await event.data?.after.ref.update({
       embedding: FieldValue.vector(embedding),
       vectorizedAt: FieldValue.serverTimestamp(),
-      aiIndexSource: essentialText // Audit log
+      aiIndexSource: essentialText,
     });
-    console.log("Creator ADK vector persisted.");
-  }
-});
-
-/**
- * parseQueryIntent
- * The "ADK Brain": Converts natural user prompt into structured logical constraints.
- */
-async function parseQueryIntent(prompt: string): Promise<{ cleanPrompt: string, budgetLimit: number | null, isUrgent: boolean }> {
-  const models = ["gemini-3.1-flash-lite", "gemini-3.1-pro", "gemini-1.5-flash"];
-  const sysPrompt = `Analisis kebutuhan bisnis dari prompt berikut.
-  Prompt: "${prompt}"
-  Ekstrak data terstruktur dalam JSON format:
-  {
-    "cleanPrompt": "hanya kata kunci esensial/deskriptif untuk pencarian vektor",
-    "budgetLimit": angka harga maksimum jika disebutkan dalam Rupiah, null jika tidak ada,
-    "isUrgent": true jika butuh cepat, false sebaliknya
-  }`;
-
-  for (const m of models) {
-    try {
-      const client = await auth.getClient();
-      const url = `https://${apiEndpoint}/v1/projects/${projectId}/locations/${vertexLocation}/publishers/google/models/${m}:generateContent`;
-      
-      const res = await client.request<any>({
-        url, method: "POST",
-        data: {
-          contents: [{ role: "user", parts: [{ text: sysPrompt }] }],
-          generationConfig: { responseMimeType: "application/json", temperature: 0.1 }
-        }
-      });
-      const outputStr = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-      const parsed = JSON.parse(outputStr);
-      return {
-        cleanPrompt: parsed.cleanPrompt || prompt,
-        budgetLimit: Number(parsed.budgetLimit) || null,
-        isUrgent: !!parsed.isUrgent
-      };
-    } catch (err) {
-      console.warn(`Intent extraction fail on ${m}, retrying fallback.`);
-    }
-  }
-  return { cleanPrompt: prompt, budgetLimit: null, isUrgent: false };
-}
+    console.log("Creator agent vector persisted.");
+  },
+);
 
 /**
  * searchCreators
- * Orchestrates hybrid spatial + semantic vector retrieval.
- * NOW ENFORCING ADK BRAIN LOGIC (Intent Extraction & Constraints enforcement).
+ * Orchestrates hybrid spatial + semantic vector retrieval using the
+ * CANDU search agent (Gemini Enterprise Agent Platform).
  */
-export const searchCreators = onCall({ enforceAppCheck: false }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError("unauthenticated", "Auth required.");
-  }
-
-  const { prompt, limit = 25, city = "Indonesia" } = request.data;
-  if (!prompt) {
-    throw new HttpsError("invalid-argument", "Query text prompt required.");
-  }
-
-  try {
-    const startTime = Date.now();
-    
-    // 🚀 PHASE A: ADK BRAIN INTENT EXTRACTION
-    console.log(`Processing user prompt logic for: "${prompt}"`);
-    const intent = await parseQueryIntent(prompt);
-    console.log("ADK Extracted Intent:", intent);
-
-    // 🚀 PHASE B: PARALLEL EXECUTION (Embeddings & Regional Trends)
-    // Notice we pass "intent.cleanPrompt" NOT the messy raw user prompt to embeddings!
-    const [queryEmbedding, trendData] = await Promise.all([
-      generateEmbedding(intent.cleanPrompt),
-      generateRegionalTrends(intent.cleanPrompt, city)
-    ]);
-
-    if (queryEmbedding.length === 0) {
-      throw new Error("Failed generating query vector.");
+export const searchCreators = onCall(
+  { enforceAppCheck: false },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Auth required.");
     }
 
-    // 🚀 PHASE C: ADK LOGICAL FILTER INJECTION
-    const creatorsRef = db.collection("creators");
-    let filteredQuery: any = creatorsRef.where("isAvailable", "==", true);
-
-    // Dynamic ADK Budget Constraint Injection
-    if (intent.budgetLimit && intent.budgetLimit > 0) {
-      console.log(`ADK Enforcing Budget Constraint: <= ${intent.budgetLimit}`);
-      // Match against creator hourlyRate 
-      filteredQuery = filteredQuery.where("hourlyRate", "<=", intent.budgetLimit);
+    const { prompt, limit = 25, city = "Indonesia" } = request.data;
+    if (!prompt) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Query text prompt required.",
+      );
     }
 
-    // 🚀 PHASE D: VERTEX RAG VECTOR RETRIEVAL
-    const vectorQuery = filteredQuery.findNearest("embedding", FieldValue.vector(queryEmbedding), {
-      limit: limit,
-      distanceMeasure: "COSINE",
-    });
+    try {
+      const startTime = Date.now();
 
-    const snapshot = await vectorQuery.get();
-    const results = snapshot.docs.map((doc: any, idx: number) => {
-      const d = doc.data();
-      const simulatedScore = Math.max(0.6, 0.95 - (idx * 0.02)); 
-      const { embedding, ...publicData } = d; 
-      return {
-        id: doc.id,
-        ...publicData,
-        computedMatchScore: simulatedScore
-      };
-    });
+      // 🚀 PHASE A: AGENT INTENT EXTRACTION
+      console.log(`Processing user prompt with Agent: "${prompt}"`);
+      const intent = await searchAgent.parseQueryIntent(prompt);
+      console.log("Agent extracted intent:", intent);
 
-    return {
-      status: "success",
-      count: results.length,
-      data: results,
-      aiInsights: trendData, 
-      extractedIntent: intent, // Pass back to UI so they see what ADK interpreted
-      telemetry: {
-        ms: Date.now() - startTime
+      // 🚀 PHASE B: PARALLEL EXECUTION (Embeddings & Regional Trends)
+      const [queryEmbedding, trendData] = await Promise.all([
+        generateEmbedding(intent.cleanPrompt),
+        searchAgent.generateRegionalTrends(intent.cleanPrompt, city),
+      ]);
+
+      if (queryEmbedding === null) {
+        throw new Error("Failed generating query vector.");
       }
-    };
+      if (queryEmbedding.length === 0) {
+        throw new Error("Empty query vector generated.");
+      }
 
-  } catch (err: any) {
-    console.error("ADK Discovery pipeline crash:", err);
-    throw new HttpsError("internal", err.message || "Discovery pipeline failed.");
-  }
-});
+      // 🚀 PHASE C: AGENT LOGICAL FILTER INJECTION
+      const creatorsRef = db.collection("creators");
+      let filteredQuery: FirebaseFirestore.Query = creatorsRef.where(
+        "isAvailable",
+        "==",
+        true,
+      );
+
+      if (intent.budgetLimit && intent.budgetLimit > 0) {
+        console.log(
+          `Agent enforcing budget constraint: <= ${intent.budgetLimit}`,
+        );
+        filteredQuery = filteredQuery.where(
+          "hourlyRate",
+          "<=",
+          intent.budgetLimit,
+        );
+      }
+
+      // 🚀 PHASE D: VERTEX RAG VECTOR RETRIEVAL
+      const vectorQuery = filteredQuery.findNearest(
+        "embedding",
+        FieldValue.vector(queryEmbedding),
+        {
+          limit,
+          distanceMeasure: "COSINE",
+        },
+      );
+
+      const snapshot = await vectorQuery.get();
+      const results = snapshot.docs.map((doc, idx) => {
+        const d = doc.data();
+        // Strip the embedding before returning to clients.
+        const { embedding: _embedding, ...publicData } = d;
+        void _embedding;
+        return {
+          id: doc.id,
+          ...publicData,
+          computedMatchScore: Math.max(0.6, 0.95 - idx * 0.02),
+        };
+      });
+
+      return {
+        status: "success",
+        count: results.length,
+        data: results,
+        aiInsights: trendData,
+        extractedIntent: intent,
+        telemetry: {
+          ms: Date.now() - startTime,
+        },
+      };
+    } catch (err: unknown) {
+      console.error("Agent discovery pipeline crash:", err);
+      const message =
+        err instanceof Error ? err.message : "Discovery pipeline failed.";
+      throw new HttpsError("internal", message);
+    }
+  },
+);
 
 /**
  * processEscrow
@@ -326,67 +315,62 @@ export const searchCreators = onCall({ enforceAppCheck: false }, async (request)
  */
 export const processEscrow = onCall(async (request) => {
   if (!request.auth) {
-    throw new HttpsError("unauthenticated", "Tindakan finansial memerlukan autentikasi.");
+    throw new HttpsError(
+      "unauthenticated",
+      "Tindakan finansial memerlukan autentikasi.",
+    );
   }
 
-  const { projectId, amount } = request.data;
-  
-  if (!projectId || !amount || amount <= 0) {
-    throw new HttpsError("invalid-argument", "Informasi proyek dan nominal tidak valid.");
+  const { projectId: targetProjectId, amount } = request.data;
+
+  if (!targetProjectId || !amount || amount <= 0) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Informasi proyek dan nominal tidak valid.",
+    );
   }
 
   const uid = request.auth.uid;
 
   try {
-    // Wrap mutation in atomic transaction to ensure absolute ACID compliance
     const result = await db.runTransaction(async (transaction) => {
-      const projRef = db.collection("projects").doc(projectId);
+      const projRef = db.collection("projects").doc(targetProjectId);
       const userRef = db.collection("users").doc(uid);
-      
+
       const projSnap = await transaction.get(projRef);
       const userSnap = await transaction.get(userRef);
 
       if (!userSnap.exists) throw "Profil pengguna tidak ditemukan.";
-
       if (!projSnap.exists) throw "Proyek tidak ditemukan.";
+
       const projData = projSnap.data();
 
-      // Verification check: only allow client of the project to start escrow
       if (projData?.clientId !== uid) {
         throw "Anda tidak berwenang memproses pembayaran untuk proyek ini.";
       }
 
-      // Check project state
-      if (projData?.status !== 'pending') {
+      if (projData?.status !== "pending") {
         throw "Proyek ini sudah diproses atau sedang berjalan.";
       }
 
-      
-      // Check sufficiency of simulated funds
-      // NOTE: For pure alpha simulator, we ignore low-balance and let users 'fund' dummy amounts freely.
-      // In true staging, logic: if (currentBalance < amount) throw "Saldo tidak cukup.";
-
-      // Update project status and record escrowed amount atomicly
       transaction.update(projRef, {
-        status: 'active',
+        status: "active",
         escrowedAmount: amount,
         startedAt: FieldValue.serverTimestamp(),
       });
 
-      // Create Audit Log Item
       const txRef = db.collection("transactions").doc();
       transaction.set(txRef, {
-        projectId: projectId,
+        projectId: targetProjectId,
         fromUid: uid,
         toUid: projData?.creatorId || "unknown",
-        amount: amount,
-        type: 'escrow_deposit',
+        amount,
+        type: "escrow_deposit",
         createdAt: FieldValue.serverTimestamp(),
       });
 
-      // Decrement sender balance (simulation)
       transaction.update(userRef, {
-        balance: FieldValue.increment(-amount)
+        balance: FieldValue.increment(-amount),
       });
 
       return txRef.id;
@@ -395,12 +379,17 @@ export const processEscrow = onCall(async (request) => {
     return {
       success: true,
       message: "Dana berhasil masuk Escrow CANDU.",
-      transactionId: result
+      transactionId: result,
     };
-
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("Escrow failure:", err);
-    throw new HttpsError("aborted", typeof err === "string" ? err : "Transaksi gagal dilakukan.");
+    const message =
+      typeof err === "string"
+        ? err
+        : err instanceof Error
+          ? err.message
+          : "Transaksi gagal dilakukan.";
+    throw new HttpsError("aborted", message);
   }
 });
 
@@ -414,41 +403,38 @@ export const enhanceBio = onCall(async (request) => {
 
   const rawInput = request.data.text;
   if (!rawInput || typeof rawInput !== "string") {
-    throw new HttpsError("invalid-argument", "Please provide raw text to enhance.");
+    throw new HttpsError(
+      "invalid-argument",
+      "Please provide raw text to enhance.",
+    );
   }
 
-  const models = ["gemini-3.1-flash-lite", "gemini-3.1-pro", "gemini-1.5-flash"];
-  
-  const sysPrompt = `Anda adalah copywriter karir profesional. 
+  const sysPrompt = `Anda adalah copywriter karir profesional.
 Tugas Anda adalah mengubah input sederhana pengguna menjadi BIOGRAFI PROFIL PROFESIONAL yang sangat menarik untuk dipajang di platform jasa.
-Buat teks menjadi mengalir, percaya diri, dan fokus pada nilai tambah bagi klien. 
-Gunakan Bahasa Indonesia profesional. Batasi maksimal 2-3 kalimat padat. 
+Buat teks menjadi mengalir, percaya diri, dan fokus pada nilai tambah bagi klien.
+Gunakan Bahasa Indonesia profesional. Batasi maksimal 2-3 kalimat padat.
 
 Input Pengguna: "${rawInput}"
 
 Balasan Anda HANYA berisi teks biografi tersebut, tanpa embel-embel percakapan lain.`;
 
-  for (const m of models) {
-    try {
-      const client = await auth.getClient();
-      const url = `https://${apiEndpoint}/v1/projects/${projectId}/locations/${vertexLocation}/publishers/google/models/${m}:generateContent`;
-      
-      const res = await client.request<any>({
-        url, method: "POST",
-        data: {
-          contents: [{ role: "user", parts: [{ text: sysPrompt }] }],
-          generationConfig: { temperature: 0.8, maxOutputTokens: 200 }
-        }
-      });
-      
-      const enhancedText = res.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-      if (enhancedText) {
-        return { enhancedText };
-      }
-    } catch (err) {
-      console.warn(`EnhanceBio fail on ${m}, retrying fallback.`);
+  try {
+    const result = await generativeModel.generateContent({
+      contents: [{ role: "user", parts: [{ text: sysPrompt }] }],
+      generationConfig: { temperature: 0.8, maxOutputTokens: 200 },
+    });
+
+    const enhancedText =
+      result.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (enhancedText) {
+      return { enhancedText };
     }
+  } catch (err) {
+    console.error("EnhanceBio failed:", err);
   }
-  
-  throw new HttpsError("unavailable", "All GenAI tiers exhausted. Try again later.");
+
+  throw new HttpsError(
+    "unavailable",
+    "All GenAI tiers exhausted. Try again later.",
+  );
 });
