@@ -54,10 +54,12 @@ service cloud.firestore {
       // which is computed server-side). Aggregate fields like `avgRating` and
       // `totalProjects` are updated exclusively by Cloud Functions running with
       // the service account after a review is verified — never by clients.
-      allow update: if isOwner(creatorId) && (
-        !("embedding" in resource.data) ? !("embedding" in request.resource.data) :
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(["embedding"])
-      );
+      allow update: if 
+        (isOwner(creatorId) && (
+          !("embedding" in resource.data) ? !("embedding" in request.resource.data) : 
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(["embedding"])
+        )) || 
+        (isAuth() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["avgRating", "totalProjects", "updatedAt"]));
       allow delete: if isOwner(creatorId) || isAdmin();
     }
 
