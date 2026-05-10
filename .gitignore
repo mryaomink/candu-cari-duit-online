@@ -31,8 +31,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files
+# Root .env (secrets) stays out; functions/.env (runtime config, no secrets)
+# is committed. Local-override files in any directory are always ignored.
+/.env
+.env.local
+.env.*.local
 
 # vercel
 .vercel
