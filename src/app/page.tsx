@@ -37,10 +37,22 @@ import AppShell from '@/components/layout/AppShell';
 // ─── Location Bootstrap ───────────────────────────────────────────────────────
 function LocationBootstrap() {
   const { setLocation, setLocationLoading, setLocationDenied } = useAppStore();
+  const showToast = useAppStore((s) => s.showToast);
   useEffect(() => {
     setLocationLoading(true);
     getCurrentLocation().then(async (coords) => {
-      if (!coords) {
+      if (coords.lat === null || coords.lng === null) {
+        const code = coords.error;
+        if (code === 1) {
+          showToast('Akses lokasi ditolak. Menampilkan radar default Indonesia.', 'info');
+        } else if (code === 2) {
+          showToast('Lokasi tidak tersedia saat ini. Menggunakan radar default.', 'info');
+        } else if (code === 3) {
+          showToast('Permintaan lokasi melebihi batas waktu. Menggunakan radar default.', 'info');
+        } else if (code === 0) {
+          showToast('Browser tidak mendukung geolocation. Menggunakan radar default.', 'info');
+        }
+        logError('LOCATION_DENIED', 'Geolocation failed', { code });
         setLocationDenied(true);
         setLocationLoading(false);
         setLocation(-2.5, 117.0, 'Indonesia', '');
@@ -55,7 +67,7 @@ function LocationBootstrap() {
       setLocationLoading(false);
       setLocation(-2.5, 117.0, 'Indonesia', '');
     });
-  }, [setLocation, setLocationLoading, setLocationDenied]);
+  }, [setLocation, setLocationLoading, setLocationDenied, showToast]);
   return null;
 }
 
@@ -70,7 +82,7 @@ function DataBootstrap() {
         .then((liveNodes) => { setNodes(liveNodes); })
         .catch((err) => { logError('FIRESTORE_READ_ERROR', 'Failed', { err }); });
     }
-  }, [lat, lng, locationLoading, setNodes]);
+  }, [lat, lng, locationLoading, setNodes, firebaseUser?.uid]);
   return null;
 }
 

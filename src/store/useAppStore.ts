@@ -65,6 +65,7 @@ interface UISlice {
   isAuthModalOpen: boolean;
   isOnboarding: boolean;
   toast: { message: string; type: 'success' | 'error' | 'info' } | null;
+  toastTimeout: ReturnType<typeof setTimeout> | null;
   featureFlags: FeatureFlags;
   setView: (view: 'radar' | 'list') => void;
   setWebglSupported: (v: boolean) => void;
@@ -81,7 +82,7 @@ type AppStore = AuthSlice & RadarSlice & SearchSlice & LocationSlice & UISlice;
 
 export const useAppStore = create<AppStore>()(
   devtools(
-    (set) => ({
+    (set, get) => ({
       // AUTH
       user: null,
       firebaseUser: null,
@@ -134,6 +135,7 @@ export const useAppStore = create<AppStore>()(
       isAuthModalOpen: false,
       isOnboarding: false,
       toast: null,
+      toastTimeout: null,
       featureFlags: {
         use_vertex_rag: true,
         radar_bloom_variant: 'A',
@@ -148,10 +150,19 @@ export const useAppStore = create<AppStore>()(
       setAuthModalOpen: (isAuthModalOpen) => set({ isAuthModalOpen }, false, 'setAuthModalOpen'),
       setOnboarding: (isOnboarding) => set({ isOnboarding }, false, 'setOnboarding'),
       showToast: (message, type = 'info') => {
-        set({ toast: { message, type } }, false, 'showToast');
-        setTimeout(() => set({ toast: null }, false, 'clearToast'), 4000);
+        const { toastTimeout } = get();
+        if (toastTimeout) clearTimeout(toastTimeout);
+        const timeoutId = setTimeout(
+          () => set({ toast: null, toastTimeout: null }, false, 'clearToast'),
+          4000,
+        );
+        set({ toast: { message, type }, toastTimeout: timeoutId }, false, 'showToast');
       },
-      clearToast: () => set({ toast: null }, false, 'clearToast'),
+      clearToast: () => {
+        const { toastTimeout } = get();
+        if (toastTimeout) clearTimeout(toastTimeout);
+        set({ toast: null, toastTimeout: null }, false, 'clearToast');
+      },
       setFeatureFlags: (featureFlags) => set({ featureFlags }, false, 'setFeatureFlags'),
     }),
     { name: 'CANDU-Store' }
