@@ -30,7 +30,10 @@ const ai = new GoogleGenAI({
   location,
 });
 
-const PRO_MODEL = "gemini-3-flash-preview";
+// Use the stable GA model. `gemini-3-flash-preview` requires per-project
+// allow-listing on Vertex AI and silently 404s on projects that haven't been
+// granted preview access, surfacing as a generic 503 to the client.
+const PRO_MODEL = "gemini-2.5-flash";
 const FLASH_MODEL = "gemini-2.5-flash";
 const EMBEDDING_MODEL = "text-embedding-004";
 
@@ -399,12 +402,19 @@ Balasan Anda HANYA berisi teks biografi tersebut, tanpa embel-embel percakapan l
     if (enhancedText) {
       return { enhancedText };
     }
-  } catch (err) {
-    console.error("EnhanceBio failed:", err);
-  }
 
-  throw new HttpsError(
-    "unavailable",
-    "All GenAI tiers exhausted. Try again later.",
-  );
+    console.error("EnhanceBio: empty response from model", { model: PRO_MODEL });
+    throw new HttpsError(
+      "unavailable",
+      "AI returned an empty response. Coba lagi.",
+    );
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("EnhanceBio failed:", err);
+    throw new HttpsError(
+      "unavailable",
+      `AI gagal merespons: ${message}`,
+    );
+  }
 });
