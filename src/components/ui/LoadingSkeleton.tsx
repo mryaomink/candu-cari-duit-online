@@ -65,4 +65,22 @@ export function PortfolioModalSkeleton() {
   );
 }
 
+export function DashboardSkeleton() {
+  return (
+    <div style={{ padding: '40px 32px' }}>
+      <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+        <div style={{ marginBottom: 32 }}>
+          <Skeleton width={200} height={36} />
+          <Skeleton width={150} height={16} style={{ marginTop: 8 }} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 24 }}>
+          <Skeleton height={180} borderRadius="var(--radius-lg)" />
+          <Skeleton height={180} borderRadius="var(--radius-lg)" />
+          <Skeleton height={180} borderRadius="var(--radius-lg)" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default Skeleton;

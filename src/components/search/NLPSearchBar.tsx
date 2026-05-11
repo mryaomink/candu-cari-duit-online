@@ -4,16 +4,17 @@ import { useAppStore, useLocation, useSearchState } from '@/store/useAppStore';
 import { nlpSearch } from '@/lib/searchService';
 import { logError } from '@/lib/logger';
 
-const EXAMPLE_PROMPTS = [
-  'Butuh fotografer untuk promo kafe minggu ini',
-  'Cari videografer untuk acara pernikahan budget 2 juta',
-  'Desainer grafis untuk konten Instagram bisnis kuliner',
-  'Pemasar digital untuk toko online baju anak',
-];
-
 export default function NLPSearchBar() {
   const { prompt, isSearching, searchError, aiInsights } = useSearchState();
   const { lat, lng, city, locationLoading, locationDenied } = useLocation();
+  const currentCity = city || 'daerah Anda';
+
+  const dynamicExamples = [
+    `Cari fotografer untuk acara di ${currentCity}`,
+    `Jasa videografer cinematic area ${currentCity}`,
+    `Desain logo UMKM lokal di ${currentCity}`,
+    `Ahli IT / programmer panggilan di ${currentCity}`,
+  ];
   const {
     setPrompt,
     setIsSearching,
@@ -24,13 +25,14 @@ export default function NLPSearchBar() {
     showToast,
     setAuthModalOpen,
     firebaseUser,
-    setAiInsights
+    setAiInsights,
+    setActiveSearchResults
   } = useAppStore();
+  const { activeSearchResults } = useSearchState();
 
   const [focused, setFocused] = useState(false);
   const [showExamples, setShowExamples] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Show examples when focused and prompt is empty
   useEffect(() => {
@@ -43,30 +45,36 @@ export default function NLPSearchBar() {
       setAuthModalOpen(true);
       return;
     }
-    if (!lat || !lng) {
-      showToast('Izinkan akses lokasi untuk mencari kreator terdekat.', 'info');
-      return;
-    }
+    // FALLBACK LOKASI: Jika browser menolak akses lokasi, gunakan koordinat Barabai/HST sebagai default
+    // Ini mencegah error "LOCATION_DENIED" memblokir keseluruhan aplikasi
+    const effectiveLat = lat || -2.5833;
+    const effectiveLng = lng || 115.3833;
+    const effectiveCity = city || 'Hulu Sungai Tengah';
 
     setIsSearching(true);
     setSearchError(null);
-    setNodes([]); // Dramatically clear existing view to prep for AI visual reveal!
     const startTime = Date.now();
 
     try {
       // CALL REAL VERTEX SEARCH WITH RAG CONTEXT
-      const { nodes, insights } = await nlpSearch(searchPrompt, lat, lng, city || 'Indonesia', firebaseUser.uid);
-      
-      setNodes(nodes);
+      const { nodes: allNodes, insights, intent } = await nlpSearch(searchPrompt, effectiveLat, effectiveLng, effectiveCity, firebaseUser.uid);
+
+      // TRUST THE BACKEND RERANKER: Do not arbitrarily discard nodes the AI already approved!
+      const relevantNodes = allNodes; // Fully open, 100% backend reliance.
+
+      setNodes(relevantNodes);
+      setActiveSearchResults(relevantNodes.map(n => n.creatorId));
       setAiInsights(insights);
       setLastSearchAt(Date.now());
-      
-      if (nodes.length === 0) {
-        showToast('Tidak ditemukan kreator yang cocok. Coba deskripsi lain.', 'info');
+
+      if (relevantNodes.length === 0) {
+        showToast('Tidak ditemukan kreator yang benar-benar cocok dengan permintaan Anda.', 'info');
       }
+
+      // MAP INTELLIGENTLY FROM GEMINI EXTRACTED INTENT
       setParsedIntent({
-        skills: ['Fotografi', 'Videografi'],
-        context: searchPrompt,
+        skills: intent?.skills || [],
+        context: intent?.industry || 'Umum',
         raw: searchPrompt,
       });
 
@@ -87,16 +95,13 @@ export default function NLPSearchBar() {
     const val = e.target.value;
     setPrompt(val);
     setSearchError(null);
-
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (val.trim().length > 10) {
-      debounceRef.current = setTimeout(() => handleSearch(val), 500);
+    if (val.trim() === '') {
+      setActiveSearchResults(null);
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
       handleSearch(prompt);
     }
     if (e.key === 'Escape') inputRef.current?.blur();
@@ -262,7 +267,7 @@ export default function NLPSearchBar() {
           <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-1)', paddingLeft: 'var(--space-1)' }}>
             💡 Contoh permintaan:
           </span>
-          {EXAMPLE_PROMPTS.map((ex, i) => (
+          {dynamicExamples.map((ex, i) => (
             <button
               key={i}
               onClick={() => {

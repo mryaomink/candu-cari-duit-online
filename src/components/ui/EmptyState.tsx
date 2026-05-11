@@ -27,14 +27,19 @@ export default function EmptyState({
 
   return (
     <div
-      className="empty-state"
+      className="empty-state animate-scale-in"
       style={{ padding: `${paddingMap[size]} var(--space-8)` }}
       role="status"
       aria-label={title}
     >
       <div
-        className="empty-state-icon"
-        style={{ width: iconSizeMap[size], height: iconSizeMap[size], fontSize: iconSizeMap[size] * 0.4 }}
+        className="empty-state-icon glass-hover"
+        style={{ 
+          width: iconSizeMap[size], 
+          height: iconSizeMap[size], 
+          fontSize: iconSizeMap[size] * 0.4,
+          transition: 'all 0.3s ease'
+        }}
       >
         {icon}
       </div>
@@ -58,7 +63,7 @@ export default function EmptyState({
       </div>
 
       {(action || secondaryAction) && (
-        <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap', justifyContent: 'center' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap', justifyContent: 'center', marginTop: 'var(--space-2)' }}>
           {action && (
             <button className="btn btn-primary btn-sm" onClick={action.onClick} id={`empty-action-${title.replace(/\s+/g, '-').toLowerCase()}`}>
               {action.label}

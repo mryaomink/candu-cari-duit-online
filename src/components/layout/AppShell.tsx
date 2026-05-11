@@ -7,9 +7,22 @@ const NLPSearchBar = dynamic(() => import('@/components/search/NLPSearchBar'), {
 
 export function Sidebar() {
   const { view, webglSupported } = useUIState();
-  const { setView, setAuthModalOpen, showToast } = useAppStore();
+  const { setView, setAuthModalOpen, showToast, clearNodes, nodes } = useAppStore();
   const firebaseUser = useFirebaseUser();
   const router = useRouter();
+
+  const handleResetArchive = () => {
+    if (nodes.length === 0) {
+      showToast('Radar Anda sudah kosong.', 'info');
+      return;
+    }
+    
+    const yes = window.confirm('Apakah Anda yakin ingin menghapus seluruh arsip radar Anda? Tindakan ini akan mengosongkan kembali peta eksplorasi talenta Anda.');
+    if (yes) {
+      clearNodes();
+      showToast('Radar telah dibersihkan secara permanen.', 'success');
+    }
+  };
 
   const handleSignOut = async () => {
     const { signOut } = await import('@/lib/authService');
@@ -41,24 +54,55 @@ export function Sidebar() {
       </div>
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div className="mono" style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, letterSpacing: 1 }}>DISCOVER</div>
+        <div className="mono" style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8, letterSpacing: 1 }}>JELAJAH</div>
         <NavButton 
           active={isAtHome && view === 'radar' && webglSupported} 
           onClick={() => { router.push('/'); setTimeout(() => setView('radar'), 50); }} 
-          icon="🌐" label="Visual Galaxy" 
+          icon="🌐" label="Radar Kreator" 
         />
         <NavButton 
           active={isAtHome && (view === 'list' || !webglSupported)} 
           onClick={() => { router.push('/'); setTimeout(() => setView('list'), 50); }} 
-          icon="☰" label="Talent Directory" 
+          icon="☰" label="Daftar Talenta" 
         />
         
-        <div className="mono" style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 24, marginBottom: 8, letterSpacing: 1 }}>MANAGEMENT</div>
+        <div className="mono" style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 24, marginBottom: 8, letterSpacing: 1 }}>MANAJEMEN</div>
         <NavButton 
           active={isAtDashboard} 
           onClick={() => router.push('/dashboard')} 
-          icon="📊" label="Dashboard" 
+          icon="📊" label="Dashboard Saya" 
         />
+
+        <div style={{ marginTop: 'auto', paddingTop: 24 }}>
+          <button 
+            onClick={handleResetArchive}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '10px 16px',
+              borderRadius: 10,
+              border: '1px dashed rgba(239, 68, 68, 0.2)',
+              background: 'transparent',
+              color: 'rgba(239, 68, 68, 0.8)',
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: 600,
+              transition: 'all 0.2s'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.05)';
+              e.currentTarget.style.color = '#ef4444';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.color = 'rgba(239, 68, 68, 0.8)';
+            }}
+          >
+            <span>🗑️</span> Reset Arsip Radar
+          </button>
+        </div>
       </div>
 
       <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 20 }}>
@@ -67,11 +111,11 @@ export function Sidebar() {
             <img src={firebaseUser.photoURL || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix'} width={40} height={40} style={{ borderRadius: '50%', border: '2px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)' }} alt="User" />
             <div style={{ flex: 1, overflow: 'hidden' }}>
               <div style={{ fontSize: 14, fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{firebaseUser.displayName}</div>
-              <button onClick={handleSignOut} style={{ background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--color-error)', cursor: 'pointer', opacity: 0.8 }}>Sign out</button>
+              <button onClick={handleSignOut} style={{ background: 'none', border: 'none', padding: 0, fontSize: 12, color: 'var(--color-error)', cursor: 'pointer', opacity: 0.8 }}>Keluar</button>
             </div>
           </div>
         ) : (
-          <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => setAuthModalOpen(true)}>Sign In</button>
+          <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => setAuthModalOpen(true)}>Masuk Akun</button>
         )}
       </div>
     </aside>

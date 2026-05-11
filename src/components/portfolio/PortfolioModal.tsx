@@ -14,6 +14,7 @@ export default function PortfolioModal() {
   const [ratingHover, setRatingHover] = useState(0);
   const [submittingRating, setSubmittingRating] = useState(false);
   const [existingRating, setExistingRating] = useState<number | null>(null);
+  const [isConfirmingHire, setIsConfirmingHire] = useState(false);
 
   // Load existing user review for this creator when modal opens
   useEffect(() => {
@@ -118,12 +119,18 @@ export default function PortfolioModal() {
     }
   };
 
-  const handleHire = () => {
+  const handleHireRequest = () => {
     if (!firebaseUser) {
       setAuthModalOpen(true);
       return;
     }
-    showToast('🔒 Menyiapkan Transaksi Kontrak Aman (Escrow)...', 'success');
+    setIsConfirmingHire(true);
+  };
+
+  const confirmHire = () => {
+    setIsConfirmingHire(false);
+    showToast('🔒 Menyiapkan Halaman Transaksi Kontrak Aman (Escrow)...', 'success');
+    // Di sini nantinya akan melakukan redirect ke sistem pembayaran atau setup project.
   };
 
   const handleClose = () => {
@@ -133,6 +140,7 @@ export default function PortfolioModal() {
       setActiveTab('info');
       setRatingHover(0);
       setExistingRating(null);
+      setIsConfirmingHire(false);
     }, 300);
   };
 
@@ -329,34 +337,62 @@ export default function PortfolioModal() {
         {/* ─── PREMIUM CTA FOOTER ─── */}
         {creator && (
           <div style={{ 
-            background: 'rgba(255,255,255,0.02)', 
+            background: 'rgba(15, 22, 41, 0.95)', 
             backdropFilter: 'blur(20px)', 
             borderTop: '1px solid rgba(255,255,255,0.05)',
             padding: '16px 24px',
             display: 'flex',
             justifyContent: 'space-between',
-            alignItems: 'center'
+            alignItems: 'center',
+            position: 'relative'
           }}>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Estimasi Tarif</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: '#fff' }}>{formatIDR(creator.hourlyRate)}<span style={{ fontSize: 12, color: 'gray' }}>/jam</span></div>
-            </div>
-            <button
-              onClick={handleHire}
-              style={{
-                background: `linear-gradient(to right, ${node?.glowColor}, ${node?.glowColor}dd)`,
-                border: 'none',
-                color: '#000',
-                padding: '12px 28px',
-                borderRadius: 12,
-                fontWeight: 700,
-                fontSize: 15,
-                cursor: 'pointer',
-                boxShadow: `0 10px 20px ${node?.glowColor}4d`
-              }}
-            >
-              Hire {creator.displayName.split(' ')[0]}
-            </button>
+            {isConfirmingHire ? (
+              <div className="animate-slide-up" style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 16 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-warning)' }}>Konfirmasi Pemesanan</div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>Dana akan diamankan sementara di platform Candu.</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => setIsConfirmingHire(false)} className="btn btn-ghost btn-sm" style={{ padding: '10px 16px' }}>Batal</button>
+                  <button 
+                    onClick={confirmHire} 
+                    className="btn btn-primary btn-sm" 
+                    style={{ 
+                      background: `linear-gradient(to right, ${node?.glowColor}, ${node?.glowColor}dd)`, 
+                      color: '#000', padding: '10px 20px', fontWeight: 700 
+                    }}
+                  >
+                    Lanjut Bayar
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Perkiraan Harga</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: '#fff' }}>{formatIDR(creator.hourlyRate)}<span style={{ fontSize: 12, color: 'gray' }}>/jam</span></div>
+                </div>
+                <button
+                  onClick={handleHireRequest}
+                  style={{
+                    background: `linear-gradient(to right, ${node?.glowColor}, ${node?.glowColor}dd)`,
+                    border: 'none',
+                    color: '#000',
+                    padding: '12px 28px',
+                    borderRadius: 12,
+                    fontWeight: 700,
+                    fontSize: 15,
+                    cursor: 'pointer',
+                    boxShadow: `0 10px 20px ${node?.glowColor}4d`,
+                    transition: 'all 0.2s'
+                  }}
+                  onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'}
+                  onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}
+                >
+                  Pesan Jasa {creator.displayName.split(' ')[0]}
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

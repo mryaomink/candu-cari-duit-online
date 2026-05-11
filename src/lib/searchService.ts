@@ -70,7 +70,7 @@ export async function nlpSearch(
   clientLng: number,
   city: string = "Indonesia",
   excludeUid?: string
-): Promise<{ nodes: RadarNode[]; insights: SearchAiInsights | null }> {
+): Promise<{ nodes: RadarNode[]; insights: SearchAiInsights | null; intent: ExtractedSearchIntent | null }> {
   const searchFn = httpsCallable<
     { prompt: string; limit: number; city: string },
     SearchCreatorsResponse
@@ -79,13 +79,15 @@ export async function nlpSearch(
   const result = await searchFn({ prompt, limit: 20, city });
   let creators: RawCreator[] = result.data.data || [];
   const insights: SearchAiInsights | null = result.data.aiInsights || null;
+  const intent: ExtractedSearchIntent | null = result.data.extractedIntent || null;
 
-  if (excludeUid) {
-    creators = creators.filter((c) => (c.id || c.uid) !== excludeUid);
-  }
+  // TEMPORARY FIX: Commented out self-exclusion to allow testing with own account profile.
+  // if (excludeUid) {
+  //   creators = creators.filter((c) => (c.id || c.uid) !== excludeUid);
+  // }
 
   const nodes = mapCreatorsToNodes(creators, clientLat, clientLng);
-  return { nodes, insights };
+  return { nodes, insights, intent };
 }
 
 /**

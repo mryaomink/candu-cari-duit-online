@@ -50,11 +50,11 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
       });
       if (result.data?.enhancedText) {
         setBio(result.data.enhancedText);
-        showToast('✨ Bio cerdas berhasil diperkuat!', 'success');
+        showToast('Sip! Bio kamu sudah diperbaiki.', 'success');
       }
     } catch (err) {
       console.error("AI bio fail:", err);
-      showToast('Gagal menghubungi AI. Coba lagi nanti.', 'error');
+      showToast('Oops, asisten pintar sedang sibuk. Coba tulis sendiri dulu ya.', 'error');
     } finally {
       setEnhancingBio(false);
     }
@@ -86,10 +86,10 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
       }
 
       setPortfolioImages((prev) => [...prev, ...uploadedFiles]);
-      showToast(`${uploadedFiles.length} gambar berhasil diunggah!`, 'success');
+      showToast(`${uploadedFiles.length} foto berhasil diunggah!`, 'success');
     } catch (err) {
       logError('CLOUDINARY_UPLOAD_FAILED', 'Failed uploading image', { err });
-      showToast('Gagal mengunggah gambar. Coba lagi.', 'error');
+      showToast('Gagal mengunggah foto. Pastikan koneksi stabil dan coba lagi.', 'error');
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -146,11 +146,11 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
         updatedAt: Timestamp.now(),
       } as any);
 
-      showToast('Profil & Radar Anda telah diperbarui!', 'success');
+      showToast('Sip! Profil kamu sudah diperbarui.', 'success');
       onClose();
     } catch (err) {
       logError('FIRESTORE_WRITE_ERROR', 'Save profile failed', { err });
-      showToast('Terjadi kesalahan saat menyimpan.', 'error');
+      showToast('Gagal menyimpan data. Coba beberapa saat lagi ya.', 'error');
     } finally {
       setLoading(false);
     }
@@ -162,7 +162,7 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
         
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-6)' }}>
           <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 24 }}>🔧</span> Pengaturan Profil
+            <span style={{ fontSize: 24 }}>🔧</span> Profil Saya
           </h2>
           <button className="btn btn-ghost" onClick={onClose} style={{ minWidth: 'unset', padding: '4px 8px' }}>✕</button>
         </div>
@@ -181,9 +181,9 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
           }}>
             <div>
               <div style={{ fontWeight: 700, color: isAvailable ? '#4ade80' : '#f87171', fontSize: 'var(--text-sm)' }}>
-                📡 Status Radar: {isAvailable ? 'Aktif & Siap Menerima Order' : 'Tersembunyi / Tidak Menerima Order'}
+                📡 Status Pencarian: {isAvailable ? 'Aktif & Siap Menerima Klien' : 'Tersembunyi / Tidak Menerima Klien'}
               </div>
-              <div style={{ fontSize: 11, color: '#9ca3af' }}>Menentukan apakah Anda tampil di peta visual klien.</div>
+              <div style={{ fontSize: 11, color: '#9ca3af' }}>Pilih apakah kamu ingin tampil dan dicari oleh klien.</div>
             </div>
             <label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 24 }}>
               <input 
@@ -209,23 +209,23 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 6 }}>
               <label style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
-                Bio Profesional & Deskripsi Jasa
+                Ceritakan Tentang Jasa Kamu
               </label>
               <button 
                 type="button" 
                 onClick={handleEnhanceBio} 
                 disabled={enhancingBio}
                 className="btn-secondary"
-                style={{ fontSize: 11, padding: '4px 10px', borderRadius: 20, background: 'linear-gradient(45deg, #7c3aed, #ec4899)', color: '#fff', border: 'none', cursor: 'pointer' }}
+                style={{ fontSize: 11, padding: '4px 10px', borderRadius: 20, background: 'linear-gradient(45deg, #7c3aed, #ec4899)', color: '#fff', border: 'none', cursor: 'pointer', transition: 'all 0.2s', opacity: enhancingBio ? 0.7 : 1 }}
               >
-                {enhancingBio ? '🪄 Memproses...' : '✨ Tulis Dengan AI'}
+                {enhancingBio ? '🪄 Sedang Menulis...' : '✨ Bantu Tulis Otomatis'}
               </button>
             </div>
             <textarea
               className="glass"
               value={bio}
               onChange={(e) => setBio(e.target.value)}
-              placeholder="Ketik poin-poin tentang keahlian Anda di sini..."
+              placeholder="Ceritakan sedikit tentang apa yang bisa kamu lakukan..."
               required
               style={{ width: '100%', minHeight: 100, padding: 'var(--space-3)', resize: 'vertical', color: '#fff', borderRadius: 'var(--radius-md)' }}
             />
@@ -248,7 +248,7 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
 
             <div>
               <label style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', display: 'block', marginBottom: 4, fontWeight: 600 }}>
-                ESTIMASI TARIF (Rp/Jam)
+                PERKIRAAN HARGA (Rp/Jam)
               </label>
               <input
                 type="number"
@@ -260,16 +260,28 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
             </div>
           </div>
 
-          {/* Cloudinary Portfolio Grid */}
+          {/* Portfolio Grid */}
           <div>
             <label style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', display: 'block', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase' }}>
-              Portofolio Kreatif (Via Cloudinary)
+              Galeri Karya (Portofolio)
             </label>
             
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))', gap: 10, marginBottom: 12 }}>
+              {portfolioImages.length === 0 && (
+                 <div className="animate-pulse" style={{ gridColumn: '1 / -1', padding: 'var(--space-4)', textAlign: 'center', color: '#9ca3af', fontSize: 'var(--text-sm)', border: '1px dashed rgba(255,255,255,0.1)', borderRadius: 8 }}>
+                    Belum ada karya yang diunggah. Tambahkan beberapa foto agar klien lebih yakin!
+                 </div>
+              )}
               {portfolioImages.map((img, i) => (
-                <div key={img.publicId || i} style={{ position: 'relative', aspectRatio: '1', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)' }}>
-                  <img src={img.thumbnailUrl || img.url} alt="Portofolio" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <div key={img.publicId || i} style={{ position: 'relative', aspectRatio: '1', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)' }}>
+                  {img.format === 'pdf' ? (
+                    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, color: 'var(--color-text-secondary)' }}>
+                      <span style={{ fontSize: 28 }}>📄</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>PDF</span>
+                    </div>
+                  ) : (
+                    <img src={img.thumbnailUrl || img.url} alt="Portofolio" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  )}
                   <button 
                     type="button"
                     onClick={() => removeImage(i)}
@@ -298,7 +310,7 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
             <input 
               type="file" 
               multiple 
-              accept="image/*" 
+              accept="image/*,application/pdf" 
               ref={fileInputRef}
               onChange={handleFileUpload}
               style={{ display: 'none' }} 
@@ -307,8 +319,8 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
 
           <div style={{ marginTop: 'var(--space-2)', display: 'flex', gap: 'var(--space-3)' }}>
             <button type="button" className="btn btn-ghost" style={{ flex: 1 }} onClick={onClose}>Batal</button>
-            <button type="submit" disabled={loading} className="btn btn-primary" style={{ flex: 2 }}>
-              {loading ? 'Menyimpan...' : '🔥 Simpan & Tembus Radar'}
+            <button type="submit" disabled={loading} className="btn btn-primary" style={{ flex: 2, opacity: loading ? 0.7 : 1 }}>
+              {loading ? 'Menyimpan Data...' : '🔥 Simpan Perubahan'}
             </button>
           </div>
 

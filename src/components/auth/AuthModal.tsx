@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { signInWithGoogle } from '@/lib/authService';
 import { useAppStore } from '@/store/useAppStore';
 
+import Link from 'next/link';
+
 const GOOGLE_ICON = (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
@@ -92,9 +94,9 @@ export default function AuthModal() {
         {/* Terms */}
         <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', textAlign: 'center', lineHeight: 1.6 }}>
           Dengan masuk, kamu menyetujui{' '}
-          <a href="/terms" style={{ color: 'var(--color-primary)', textDecoration: 'none' }}>Syarat & Ketentuan</a>
+          <Link href="/terms" onClick={() => setAuthModalOpen(false)} style={{ color: 'var(--color-primary)', textDecoration: 'none' }}>Syarat & Ketentuan</Link>
           {' '}dan{' '}
-          <a href="/privacy" style={{ color: 'var(--color-primary)', textDecoration: 'none' }}>Kebijakan Privasi</a>{' '}
+          <Link href="/privacy" onClick={() => setAuthModalOpen(false)} style={{ color: 'var(--color-primary)', textDecoration: 'none' }}>Kebijakan Privasi</Link>{' '}
           CANDU.
         </p>
 

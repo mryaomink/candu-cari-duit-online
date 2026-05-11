@@ -70,23 +70,6 @@ function LocationBootstrap() {
   return null;
 }
 
-// ─── Initial Data Loader ──────────────────────────────────────────────────────
-function DataBootstrap() {
-  const { lat, lng, locationLoading } = useLocation();
-  const firebaseUser = useFirebaseUser();
-  const isAuthLoading = useAppStore((s) => s.isAuthLoading);
-  const setNodes = useAppStore((s) => s.setNodes);
-  useEffect(() => {
-    if (locationLoading || lat === null || lng === null) return;
-    if (isAuthLoading) return;
-    if (!firebaseUser) return;
-    fetchAllCreators(lat, lng, firebaseUser.uid)
-      .then((liveNodes) => { setNodes(liveNodes); })
-      .catch((err) => { logError('FIRESTORE_READ_ERROR', 'Failed', { err }); });
-  }, [lat, lng, locationLoading, setNodes, isAuthLoading, firebaseUser]);
-  return null;
-}
-
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function HomePage() {
   const { view, webglSupported, isPortfolioOpen, isAuthModalOpen } = useUIState();
@@ -94,7 +77,6 @@ export default function HomePage() {
   return (
     <AppProvider>
       <LocationBootstrap />
-      <DataBootstrap />
       
       <AppShell showSearch={true}>
         {view === 'radar' && webglSupported ? (

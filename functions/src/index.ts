@@ -3,7 +3,7 @@ import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { setGlobalOptions } from "firebase-functions/v2";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 
 import { CanduSearchAgent } from "./agent";
 
@@ -74,32 +74,91 @@ async function generateEmbedding(text: string): Promise<number[] | null> {
 }
 
 /**
- * distillCreatorContent
- * Leverages Gemini (via the Gen AI SDK) to strip noise and define the
- * essential vector-indexing text from raw bio/skills.
+ * Fetches an external image URL and converts it to base64 inlineData for the Gemini SDK.
+ */
+async function fetchToInlineData(url: string, format: string = "jpeg"): Promise<{ inlineData: { mimeType: string, data: string } } | null> {
+  try {
+    // Map simple extensions to full MIME
+    let mimeType = "image/jpeg";
+    const lower = format.toLowerCase();
+    if (lower === "png") mimeType = "image/png";
+    if (lower === "webp") mimeType = "image/webp";
+    if (lower === "pdf") mimeType = "application/pdf";
+    
+    // In case of .pdf in URL override
+    if (url.toLowerCase().endsWith(".pdf")) {
+      mimeType = "application/pdf";
+    }
+
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Failed download: ${resp.status}`);
+    
+    const buf = await resp.arrayBuffer();
+    const base64 = Buffer.from(buf).toString("base64");
+    
+    return { inlineData: { mimeType, data: base64 } };
+  } catch (err) {
+    console.warn(`Skipping media extraction for ${url}:`, err);
+    return null;
+  }
+}
+
+/**
+ * distillCreatorContent (Multimodal Upgrade)
+ * Leverages Gemini Vision/Multi-modal capabilities to ingest BOTH the bio text
+ * and the ACTUAL visual portfolio artifacts, yielding a truly unified competency vector.
  */
 async function distillCreatorContent(
   bio: string,
   skills: string[],
+  portfolio: any[] = []
 ): Promise<string> {
-  const prompt = `You are a professional entity extractor. Summarize the creator profile into a concise list of core keywords/capabilities for system matching. Remove unnecessary connector words.
+  const textPrompt = `You are an Elite Competency Extractor.
+Task: Analyze the provided creator profile (Bio/Skills) AND their actual visual portfolio artifacts (Images/Docs).
+Objective: Extract deep, unsaid technical competencies and visual quality markers evident in their real work.
+Output: A single condensed string of comma-separated keywords containing their stated AND proven capabilities. Output ONLY the result. No conversation.
+
 Bio: ${bio}
 Skills: ${skills.join(", ")}
-Output ONLY the essential summary text separated by commas.`;
+`;
 
   try {
+    // Extract latest 3 artifacts to manage token window & latency
+    const activeMedia = portfolio.slice(0, 3);
+    const mediaPartsPromises = activeMedia.map(async (item: any) => {
+      const url = item.secure_url || item.url;
+      if (!url) return null;
+      return fetchToInlineData(url, item.format || "jpeg");
+    });
+
+    const resolvedParts = (await Promise.all(mediaPartsPromises)).filter(Boolean);
+
+    const contents: any[] = [{ text: textPrompt }];
+    resolvedParts.forEach(part => {
+      if (part) contents.push(part);
+    });
+
+    console.log(`Sending distill prompt with ${resolvedParts.length} multi-modal artifacts...`);
+    
     const response = await ai.models.generateContent({
       model: FLASH_MODEL,
-      contents: prompt,
-      config: { temperature: 0.2, maxOutputTokens: 150 },
+      contents,
+      config: { 
+        temperature: 0.1, // Strictness matters here
+        maxOutputTokens: 300 
+      },
     });
 
     const text = response.text?.trim();
-    if (text) return text;
+    if (text) {
+      console.log("Distillation successful with artifact injection.");
+      return text;
+    }
   } catch (err) {
-    console.warn("Distillation failed, using fallback:", err);
+    console.warn("Deep multi-modal distillation failed, using fallback text-only:", err);
   }
 
+  // Ultimate safe fallback
   return `${bio} ${skills.join(", ")}`;
 }
 
@@ -122,6 +181,7 @@ export const onCreatorProfileWrite = onDocumentWritten(
       afterData.displayName || "",
       afterData.bio || "",
       ...(afterData.skills || []),
+      ...(afterData.portfolioImages || []).map((p: any) => p.publicId || p.url),
     ].join(" | ");
 
     const oldComposite = beforeData
@@ -129,21 +189,23 @@ export const onCreatorProfileWrite = onDocumentWritten(
           beforeData.displayName || "",
           beforeData.bio || "",
           ...(beforeData.skills || []),
+          ...(beforeData.portfolioImages || []).map((p: any) => p.publicId || p.url),
         ].join(" | ")
       : "";
 
     if (compositeText === oldComposite && beforeData?.embedding) {
-      console.log("No fundamental text changes detected.");
+      console.log("No fundamental profile or portfolio changes detected.");
       return;
     }
 
     console.log(
-      `Step 1: Distilling semantics for creator ${event.params.creatorId}...`,
+      `Step 1: Deep-distilling multi-modal semantics for creator ${event.params.creatorId}...`,
     );
 
     const essentialText = await distillCreatorContent(
       afterData.bio || "",
       afterData.skills || [],
+      afterData.portfolioImages || [],
     );
     const finalIndexingText = `${afterData.displayName} | ${essentialText}`;
 
@@ -245,23 +307,110 @@ export const searchCreators = onCall(
       );
 
       const snapshot = await vectorQuery.get();
-      const results = snapshot.docs.map((doc, idx) => {
+      const results = snapshot.docs.map((doc) => {
         const d = doc.data();
-        const { embedding: _embedding, ...publicData } = d;
-        void _embedding;
+        const rawEmbedding = d.embedding;
+        let realScore = 0.5; // Fallback low boundary
+
+        try {
+          // Firestore admin provides a VectorValue type which can be accessed via toArray()
+          // or it may arrive as a plain native array depending on runtime context.
+          const vectorB: number[] = typeof rawEmbedding?.toArray === 'function' 
+            ? rawEmbedding.toArray() 
+            : Array.isArray(rawEmbedding) ? rawEmbedding : [];
+
+          if (vectorB.length > 0 && queryEmbedding.length > 0) {
+            // Google's text-embedding-004 are normalized. Dot product === Cosine Similarity.
+            let dot = 0;
+            const len = Math.min(queryEmbedding.length, vectorB.length);
+            for (let i = 0; i < len; i++) {
+              dot += queryEmbedding[i] * (vectorB[i] || 0);
+            }
+            realScore = dot;
+          }
+        } catch (e) {
+          console.error(`Failed vector math for doc ${doc.id}:`, e);
+        }
+
+        // Strip heavy vector from standard response payloads to minimize bandwidth
+        const { embedding: _discard, ...publicData } = d;
+        void _discard;
+
         return {
           id: doc.id,
           displayName: publicData.displayName,
           bio: publicData.bio,
           skills: publicData.skills,
           ...publicData,
-          computedMatchScore: Math.max(0.6, 0.95 - idx * 0.02),
+          computedMatchScore: Number(realScore.toFixed(4)),
         };
       });
 
-      // 🚀 PHASE D: GENERATION (RAG Synthesis with Search Grounding)
+      // 🚀 PHASE D: ELITE RERANKING (Gemini Verification Layer)
+      // Harness Gemini's deep comprehension to surgically excise high-similarity semantic noise.
+      let finalMatches = results;
+      if (results.length > 0) {
+        try {
+          const candidateLog = results.map((r, idx) => 
+            `${idx}: [${r.displayName}] Bio: ${r.bio || 'n/a'}. Skills: ${Array.isArray(r.skills) ? r.skills.join(', ') : 'n/a'}`
+          ).join('\n');
+
+          const rerankPrompt = `Task: Smart Relevancy Gatekeeper
+Evaluate if candidates actually match the specific User Request.
+
+User Search Request: "${prompt}"
+
+Candidate Pool:
+${candidateLog}
+
+LOGICAL EVALUATION GUIDELINES:
+1. ACCEPTANCE RULE: If a user asks for a specific technical service (e.g., Programmer, Developer) and the candidate explicitly lists those technical skills, you MUST ACCEPT THEM ([idx]). They are a perfect match.
+2. REJECTION RULE: If a user asks for an unrelated category (e.g., Laundry, Cleaners) and the candidate ONLY lists Coding/Tech, you MUST REJECT THEM immediately. 
+3. No Category Mixing: A software creator cannot perform physical laundry services, and vice versa.
+4. Be accurate, logical, and fair. Output the indices of logical matches only.
+
+Output Instructions: Output ONLY the flat JSON array of matching indices.`;
+
+          const reResp = await ai.models.generateContent({
+            model: FLASH_MODEL,
+            contents: rerankPrompt,
+            config: {
+              temperature: 0,
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.INTEGER,
+                },
+              },
+              maxOutputTokens: 100,
+            }
+          });
+
+          let rawText = reResp.text?.trim() || "[]";
+          
+          // Aggressive cleaning in case of markdown leakage
+          if (rawText.includes("```")) {
+            rawText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+          }
+
+          const validIndices = JSON.parse(rawText);
+          if (Array.isArray(validIndices)) {
+             const parsedIndices = validIndices.map(n => Number(n)).filter(n => !isNaN(n));
+             finalMatches = results.filter((_, i) => parsedIndices.includes(i));
+             console.log(`[Reranker] Successfully pruned candidates down to ${finalMatches.length} confirmed matches.`);
+          } else {
+             finalMatches = []; // Force strict zero on invalid shape
+          }
+        } catch (rerankErr) {
+          console.error("Gatekeeper layer CRITICALLY degraded! Locking down security perimeter to ZERO results:", rerankErr);
+          finalMatches = []; // HARD LOCKDOWN: If AI crashes, nobody passes the gate!
+        }
+      }
+
+      // 🚀 PHASE E: GENERATION (RAG Synthesis with Search Grounding)
       // Feed actual Top 3 matching profiles to the reasoning engine.
-      const topMatchesForAi = results.slice(0, 3).map((r) => ({
+      const topMatchesForAi = finalMatches.slice(0, 3).map((r) => ({
         displayName: String(r.displayName || "Anon"),
         bio: String(r.bio || ""),
         skills: Array.isArray(r.skills) ? r.skills : [],
@@ -276,8 +425,8 @@ export const searchCreators = onCall(
 
       return {
         status: "success",
-        count: results.length,
-        data: results,
+        count: finalMatches.length,
+        data: finalMatches,
         aiInsights: trendData,
         extractedIntent: intent,
         telemetry: {

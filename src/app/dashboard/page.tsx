@@ -10,6 +10,7 @@ const CreatorDashboard = dynamic(() => import('@/components/dashboard/CreatorDas
 const ClientDashboard = dynamic(() => import('@/components/dashboard/ClientDashboard'), { ssr: false });
 
 import AppShell from '@/components/layout/AppShell';
+import { DashboardSkeleton } from '@/components/ui/LoadingSkeleton';
 
 export default function DashboardLayout() {
   return (
@@ -34,11 +35,7 @@ function DashboardContent() {
   }, [firebaseUser, loading, router]);
 
   if (loading || !firebaseUser) {
-    return (
-      <div style={{ height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-        <div className="animate-spin" style={{ fontSize: 24, color: 'var(--color-primary)' }}>⟳</div>
-      </div>
-    );
+    return <DashboardSkeleton />;
   }
 
   return (
@@ -47,7 +44,7 @@ function DashboardContent() {
         
         <header style={{ marginBottom: 32 }}>
           <h1 style={{ fontSize: 36, fontWeight: 900, letterSpacing: '-0.5px', marginBottom: 8 }}>
-            Overview
+            Ringkasan Akun
           </h1>
           <p style={{ color: 'var(--color-text-muted)' }}>
             Selamat datang, {firebaseUser.displayName}
