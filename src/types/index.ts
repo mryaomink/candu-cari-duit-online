@@ -21,6 +21,7 @@ export interface AppUser {
   skills?: string[];
   hourlyRate?: number;
   portfolioImages?: CloudinaryImage[];
+  cvDocument?: CloudinaryDocument | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -33,6 +34,17 @@ export interface CloudinaryImage {
   height: number;
   format: string;
   thumbnailUrl: string;
+}
+
+// PDF / non-image document uploaded via the secure Cloudinary pipeline.
+// Stored with `resource_type: 'raw'` so the original bytes survive and can
+// be re-ingested by Gemini Vision during portfolio distillation.
+export interface CloudinaryDocument {
+  publicId: string;
+  url: string;
+  format: string;       // typically 'pdf'
+  bytes: number;
+  filename: string;     // original filename, for UI display
 }
 
 // Output of the multimodal portfolio distillation pipeline. Lives on the
@@ -60,6 +72,7 @@ export interface Creator {
   totalProjects: number;
   totalEarnings: number;
   portfolioImages: CloudinaryImage[];
+  cvDocument?: CloudinaryDocument | null;
   hourlyRate: number; // IDR
   isAvailable: boolean;
   isVerified: boolean;
