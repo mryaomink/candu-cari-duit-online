@@ -35,6 +35,17 @@ export interface CloudinaryImage {
   thumbnailUrl: string;
 }
 
+// Output of the multimodal portfolio distillation pipeline. Lives on the
+// creator doc so the frontend can render "AI-Verified" badges and the search
+// layer can apply soft ranking boosts without re-running Gemini Vision per
+// query. Populated by `onCreatorProfileWrite` in functions/src/index.ts.
+export interface ProvenCompetencies {
+  proven_skills: string[];        // skills evidenced in portfolio artifacts
+  style_tags: string[];           // aesthetic markers (e.g. "minimalist", "warm tone")
+  visual_quality_score: number;   // 0-1 rough portfolio quality signal
+  red_flags: string[];            // suspected issues (watermark, AI-generated, low-res)
+}
+
 export interface Creator {
   uid: string;
   displayName: string;
@@ -53,6 +64,7 @@ export interface Creator {
   isAvailable: boolean;
   isVerified: boolean;
   portfolioEmbeddingText: string;
+  provenCompetencies?: ProvenCompetencies;
   nodeSize: 'small' | 'medium' | 'large';
   nodeGlowIntensity: number; // 0.3 | 0.7 | 1.0
   createdAt: Timestamp;

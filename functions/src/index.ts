@@ -7,6 +7,25 @@ import { GoogleGenAI, Type } from "@google/genai";
 
 import { CanduSearchAgent } from "./agent";
 
+// Structured output of the multimodal Vision distillation. Mirrors the
+// `ProvenCompetencies` interface in src/types/index.ts so the frontend can
+// consume the same shape.
+interface DistilledCompetencies {
+  proven_skills: string[];
+  style_tags: string[];
+  visual_quality_score: number;
+  red_flags: string[];
+}
+
+interface DistillationResult {
+  // JSON-structured competency data, persisted to `provenCompetencies`.
+  competencies: DistilledCompetencies;
+  // Flat, comma-separated keyword string used as input to the embedding
+  // model. Built from proven_skills + style_tags so vector search continues to
+  // surface creators whose portfolio actually demonstrates the queried skill.
+  distilledText: string;
+}
+
 // Initialize app targeting named db
 initializeApp();
 const db = getFirestore("candu");
@@ -154,26 +173,71 @@ async function fetchToInlineData(url: string, format: string = "jpeg"): Promise<
 }
 
 /**
- * distillCreatorContent (Multimodal Upgrade)
- * Leverages Gemini Vision/Multi-modal capabilities to ingest BOTH the bio text
- * and the ACTUAL visual portfolio artifacts, yielding a truly unified competency vector.
+ * Builds a flat keyword string suitable for the embedding model from the
+ * structured competency output. Joining with commas keeps the surface form
+ * close to what the original freeform distillation produced, which preserves
+ * existing embedding-space distances.
+ */
+function buildDistilledText(
+  competencies: DistilledCompetencies,
+  bio: string,
+  skills: string[],
+): string {
+  const parts = [
+    ...competencies.proven_skills,
+    ...competencies.style_tags,
+  ].filter((s) => typeof s === "string" && s.trim().length > 0);
+
+  if (parts.length === 0) {
+    // Safe fallback so we never embed an empty string when Vision yields
+    // nothing useful.
+    return `${bio} ${skills.join(", ")}`.trim();
+  }
+  return parts.join(", ");
+}
+
+/**
+ * Returns a permissive, neutral competency object used whenever Vision fails
+ * or returns malformed output. Treat as "no proof either way" — empty arrays
+ * mean we have no evidence to gate ranking on, not that the creator is bad.
+ */
+function emptyCompetencies(): DistilledCompetencies {
+  return {
+    proven_skills: [],
+    style_tags: [],
+    visual_quality_score: 0,
+    red_flags: [],
+  };
+}
+
+/**
+ * distillCreatorContent (Multimodal Upgrade — Structured Output)
+ * Sends bio + skills + up to 3 portfolio artifacts to Gemini Flash and forces
+ * a JSON response via function calling. The structured output is persisted on
+ * the creator doc as `provenCompetencies` for downstream UI badges and
+ * search-time ranking boosts. A flattened keyword string is also returned so
+ * `generateEmbedding` keeps working unchanged.
  */
 async function distillCreatorContent(
   bio: string,
   skills: string[],
   portfolio: any[] = []
-): Promise<string> {
-  const textPrompt = `You are an Elite Competency Extractor.
-Task: Analyze the provided creator profile (Bio/Skills) AND their actual visual portfolio artifacts (Images/Docs).
-Objective: Extract deep, unsaid technical competencies and visual quality markers evident in their real work.
-Output: A single condensed string of comma-separated keywords containing their stated AND proven capabilities. Output ONLY the result. No conversation.
+): Promise<DistillationResult> {
+  const safeBio = bio || "";
+  const safeSkills = Array.isArray(skills) ? skills : [];
 
-Bio: ${bio}
-Skills: ${skills.join(", ")}
+  const textPrompt = `You are an Elite Competency Extractor for the CANDU hyperlocal creator marketplace.
+Task: Analyze the provided creator profile (Bio/Skills) AND their actual visual portfolio artifacts (Images/Docs).
+Objective: Distinguish CLAIMED capabilities from PROVEN ones — only list a skill under "proven_skills" if at least one portfolio artifact clearly demonstrates it. List visual aesthetic markers under "style_tags". Score overall visual quality (composition, resolution, professionalism) in [0,1]. Flag concerning artifacts under "red_flags" (watermarked stock, suspected AI-generated, very low resolution, off-topic).
+You MUST invoke the 'record_competencies' function with the parsed data. Output ONLY the function call.
+
+Bio: ${safeBio}
+Claimed Skills: ${safeSkills.join(", ")}
 `;
 
   try {
-    // Extract latest 3 artifacts to manage token window & latency
+    // Extract latest 3 artifacts to manage token window & latency. Tier-aware
+    // distillation is a Phase 2 concern.
     const activeMedia = portfolio.slice(0, 3);
     const mediaPartsPromises = activeMedia.map(async (item: any) => {
       const url = item.secure_url || item.url;
@@ -184,32 +248,138 @@ Skills: ${skills.join(", ")}
     const resolvedParts = (await Promise.all(mediaPartsPromises)).filter(Boolean);
 
     const contents: any[] = [{ text: textPrompt }];
-    resolvedParts.forEach(part => {
+    resolvedParts.forEach((part) => {
       if (part) contents.push(part);
     });
 
-    console.log(`Sending distill prompt with ${resolvedParts.length} multi-modal artifacts...`);
-    
+    console.log(
+      `[Distill] Sending prompt with ${resolvedParts.length} multimodal artifact(s).`,
+    );
+
     const response = await ai.models.generateContent({
       model: FLASH_MODEL,
       contents,
-      config: { 
-        temperature: 0.1, // Strictness matters here
-        maxOutputTokens: 300 
+      config: {
+        temperature: 0.1,
+        maxOutputTokens: 600,
+        tools: [
+          {
+            functionDeclarations: [
+              {
+                name: "record_competencies",
+                description:
+                  "Persist the structured competency analysis of the creator's portfolio.",
+                parameters: {
+                  type: Type.OBJECT,
+                  properties: {
+                    proven_skills: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                      description:
+                        "Skills evidenced by at least one portfolio artifact. Lowercase, deduped, max 20 items.",
+                    },
+                    style_tags: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                      description:
+                        "Aesthetic / style markers visible in the portfolio (e.g. 'minimalist', 'warm tone'). Max 10 items.",
+                    },
+                    visual_quality_score: {
+                      type: Type.NUMBER,
+                      description:
+                        "Overall visual quality of the portfolio, 0 (poor) to 1 (exceptional).",
+                    },
+                    red_flags: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                      description:
+                        "Suspected issues such as watermarked stock, AI-generated, low resolution, or off-topic artifacts. Empty array if none.",
+                    },
+                  },
+                  required: [
+                    "proven_skills",
+                    "style_tags",
+                    "visual_quality_score",
+                    "red_flags",
+                  ],
+                },
+              },
+            ],
+          },
+        ],
       },
     });
 
-    const text = response.text?.trim();
-    if (text) {
-      console.log("Distillation successful with artifact injection.");
-      return text;
+    // Prefer the structured function-call payload. Fall back to JSON-in-text
+    // for older SDK shapes that surface tool calls differently.
+    type FunctionCallPart = {
+      functionCall?: { name?: string; args?: unknown };
+    };
+    type CandidateShape = {
+      candidates?: Array<{ content?: { parts?: FunctionCallPart[] } }>;
+    };
+    const candidate = (response as unknown as CandidateShape).candidates?.[0];
+    const parts: FunctionCallPart[] = candidate?.content?.parts || [];
+    const fnCall = parts.find((p) => p?.functionCall)?.functionCall;
+
+    let raw: unknown = fnCall?.args;
+    if (!raw && response.text) {
+      try {
+        raw = JSON.parse(response.text.replace(/```json|```/g, "").trim());
+      } catch {
+        // Ignore — falls through to empty competencies below.
+      }
     }
+
+    const competencies = normalizeCompetencies(raw);
+    const distilledText = buildDistilledText(competencies, safeBio, safeSkills);
+    console.log(
+      `[Distill] Structured output ready: proven=${competencies.proven_skills.length} style=${competencies.style_tags.length} quality=${competencies.visual_quality_score.toFixed(2)} flags=${competencies.red_flags.length}`,
+    );
+    return { competencies, distilledText };
   } catch (err) {
-    console.warn("Deep multi-modal distillation failed, using fallback text-only:", err);
+    console.warn(
+      "[Distill] Multimodal distillation failed; persisting empty competencies and text-only fallback:",
+      err,
+    );
   }
 
-  // Ultimate safe fallback
-  return `${bio} ${skills.join(", ")}`;
+  const fallbackCompetencies = emptyCompetencies();
+  return {
+    competencies: fallbackCompetencies,
+    distilledText: `${safeBio} ${safeSkills.join(", ")}`.trim(),
+  };
+}
+
+/**
+ * Coerces an arbitrary Gemini response payload into the strict
+ * `DistilledCompetencies` shape, dropping anything that doesn't match.
+ */
+function normalizeCompetencies(raw: unknown): DistilledCompetencies {
+  const empty = emptyCompetencies();
+  if (!raw || typeof raw !== "object") return empty;
+  const obj = raw as Record<string, unknown>;
+
+  const toStringArray = (v: unknown): string[] =>
+    Array.isArray(v)
+      ? v
+          .filter((x): x is string => typeof x === "string")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+      : [];
+
+  const rawScore = obj.visual_quality_score;
+  const score =
+    typeof rawScore === "number" && Number.isFinite(rawScore)
+      ? Math.min(1, Math.max(0, rawScore))
+      : 0;
+
+  return {
+    proven_skills: toStringArray(obj.proven_skills).slice(0, 20),
+    style_tags: toStringArray(obj.style_tags).slice(0, 10),
+    visual_quality_score: score,
+    red_flags: toStringArray(obj.red_flags).slice(0, 10),
+  };
 }
 
 /**
@@ -249,18 +419,18 @@ export const onCreatorProfileWrite = onDocumentWritten(
     }
 
     console.log(
-      `Step 1: Deep-distilling multi-modal semantics for creator ${event.params.creatorId}...`,
+      `[Distill] Step 1: Deep-distilling multi-modal semantics for creator ${event.params.creatorId}...`,
     );
 
-    const essentialText = await distillCreatorContent(
+    const { competencies, distilledText } = await distillCreatorContent(
       afterData.bio || "",
       afterData.skills || [],
       afterData.portfolioImages || [],
     );
-    const finalIndexingText = `${afterData.displayName} | ${essentialText}`;
+    const finalIndexingText = `${afterData.displayName} | ${distilledText}`;
 
     console.log(
-      `Step 2: Vectorizing distilled index: ${finalIndexingText.substring(
+      `[Distill] Step 2: Vectorizing distilled index: ${finalIndexingText.substring(
         0,
         50,
       )}...`,
@@ -269,14 +439,14 @@ export const onCreatorProfileWrite = onDocumentWritten(
 
     if (embedding === null) {
       console.error(
-        `Embedding generation FAILED for ${event.params.creatorId}; skipping write to avoid clobbering existing vector.`,
+        `[Distill] Embedding generation FAILED for ${event.params.creatorId}; skipping write to avoid clobbering existing vector.`,
       );
       return;
     }
 
     if (embedding.length === 0) {
       console.warn(
-        `Empty composite text for ${event.params.creatorId}; no vector persisted.`,
+        `[Distill] Empty composite text for ${event.params.creatorId}; no vector persisted.`,
       );
       return;
     }
@@ -284,9 +454,12 @@ export const onCreatorProfileWrite = onDocumentWritten(
     await event.data?.after.ref.update({
       embedding: FieldValue.vector(embedding),
       vectorizedAt: FieldValue.serverTimestamp(),
-      aiIndexSource: essentialText,
+      aiIndexSource: distilledText,
+      provenCompetencies: competencies,
     });
-    console.log("Creator agent vector persisted.");
+    console.log(
+      `[Distill] Creator vector + structured competencies persisted for ${event.params.creatorId}.`,
+    );
   },
 );
 
