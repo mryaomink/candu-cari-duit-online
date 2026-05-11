@@ -50,7 +50,10 @@ const searchAgent = new CanduSearchAgent();
  *            distinguish these cases to avoid persisting empty vectors
  *            on transient errors.
  */
-async function generateEmbedding(text: string): Promise<number[] | null> {
+async function generateEmbedding(
+  text: string,
+  taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY" = "RETRIEVAL_DOCUMENT",
+): Promise<number[] | null> {
   const cleanText = text.substring(0, 2500).replace(/\n/g, " ");
   if (!cleanText.trim()) return [];
 
@@ -58,19 +61,66 @@ async function generateEmbedding(text: string): Promise<number[] | null> {
     const response = await ai.models.embedContent({
       model: EMBEDDING_MODEL,
       contents: cleanText,
-      config: { taskType: "RETRIEVAL_DOCUMENT" },
+      config: { taskType },
     });
 
     const values = response.embeddings?.[0]?.values;
     if (values && values.length > 0) {
       return values;
     }
-    console.error("Vertex embedding response missing values:", response);
+    console.error(
+      `[Embedding] Vertex response missing values for task=${taskType}, textLen=${cleanText.length}:`,
+      response,
+    );
     return null;
   } catch (err) {
-    console.error("Vertex AI embedding failure:", err);
+    console.error(
+      `[Embedding] Vertex AI failure for task=${taskType}, textLen=${cleanText.length}:`,
+      err,
+    );
     return null;
   }
+}
+
+/**
+ * tokenize
+ * Simple word tokenizer used by the keyword fallback. Lowercases, strips
+ * punctuation, drops short stop-ish tokens.
+ */
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 3);
+}
+
+/**
+ * keywordScore
+ * Lightweight bag-of-words overlap score between a query and a creator doc
+ * (bio + skills + displayName). Returns a [0,1] score used only when the
+ * vector search path produces zero results or fails. NOT a replacement for
+ * semantic search — just a safety net.
+ */
+function keywordScore(
+  queryTokens: Set<string>,
+  creator: { displayName?: unknown; bio?: unknown; skills?: unknown },
+): number {
+  if (queryTokens.size === 0) return 0;
+  const docText = [
+    String(creator.displayName || ""),
+    String(creator.bio || ""),
+    Array.isArray(creator.skills) ? creator.skills.join(" ") : "",
+  ]
+    .join(" ")
+    .toLowerCase();
+  const docTokens = new Set(tokenize(docText));
+  if (docTokens.size === 0) return 0;
+  let overlap = 0;
+  for (const t of queryTokens) {
+    if (docTokens.has(t)) overlap += 1;
+  }
+  return overlap / queryTokens.size;
 }
 
 /**
@@ -264,87 +314,207 @@ export const searchCreators = onCall(
       const startTime = Date.now();
 
       // 🚀 PHASE A: AGENT INTENT EXTRACTION
-      console.log(`Processing user prompt with Agent: "${prompt}"`);
+      console.log(`[Search] Processing user prompt with Agent: "${prompt}"`);
       const intent = await searchAgent.parseQueryIntent(prompt);
-      console.log("Agent extracted intent:", intent);
+      console.log("[Search] Agent extracted intent:", {
+        cleanPrompt: intent.cleanPrompt,
+        budgetLimit: intent.budgetLimit,
+        isUrgent: intent.isUrgent,
+        skills: intent.skills,
+        industry: intent.industry,
+      });
 
       // 🚀 PHASE B: RETRIEVAL (Query Vectorization)
-      const queryEmbedding = await generateEmbedding(intent.cleanPrompt);
+      const queryEmbedding = await generateEmbedding(
+        intent.cleanPrompt,
+        "RETRIEVAL_QUERY",
+      );
 
       if (queryEmbedding === null) {
-        throw new Error("Failed generating query vector.");
-      }
-      if (queryEmbedding.length === 0) {
-        throw new Error("Empty query vector generated.");
+        console.error(
+          "[Search] Query embedding generation failed; falling back to keyword search.",
+        );
+      } else if (queryEmbedding.length === 0) {
+        console.warn(
+          "[Search] Empty query embedding (empty cleanPrompt); falling back to keyword search.",
+        );
+      } else {
+        console.log(
+          `[Search] Query embedding generated (dim=${queryEmbedding.length}).`,
+        );
       }
 
-      // 🚀 PHASE C: AGENT LOGICAL FILTER & VECTOR MATCHING
+      // 🚀 PHASE C: VECTOR MATCHING
+      // NOTE: We intentionally do NOT apply isAvailable or hourlyRate as
+      // pre-filters on the Firestore vector query. Pre-filtering on
+      // hourlyRate caused relevant high-rate creators to be dropped before
+      // semantic ranking even ran; pre-filtering on isAvailable excluded
+      // every legacy creator missing the field. Both constraints are now
+      // applied as soft post-filters / scoring signals further down.
       const creatorsRef = db.collection("creators");
-      let filteredQuery: FirebaseFirestore.Query = creatorsRef.where(
-        "isAvailable",
-        "==",
-        true,
+
+      type VectorResult = {
+        id: string;
+        data: FirebaseFirestore.DocumentData;
+        rawScore: number;
+      };
+
+      let vectorResults: VectorResult[] = [];
+      let vectorSearchFailed = false;
+
+      if (queryEmbedding && queryEmbedding.length > 0) {
+        try {
+          // Overshoot the requested limit so soft post-filters (availability,
+          // budget) still leave enough candidates for the reranker.
+          const vectorQuery = creatorsRef.findNearest(
+            "embedding",
+            FieldValue.vector(queryEmbedding),
+            {
+              limit: Math.max(limit * 3, 30),
+              distanceMeasure: "COSINE",
+            },
+          );
+
+          const snapshot = await vectorQuery.get();
+          console.log(
+            `[Search] Vector search returned ${snapshot.size} candidate(s) (pre-filter).`,
+          );
+
+          vectorResults = snapshot.docs.map((doc) => {
+            const d = doc.data();
+            const rawEmbedding = d.embedding;
+            let realScore = 0;
+
+            try {
+              // Firestore admin provides a VectorValue (toArray()) or, in some
+              // runtimes, a plain number[]. text-embedding-004 vectors are
+              // L2-normalized so dot product === cosine similarity.
+              const vectorB: number[] =
+                typeof rawEmbedding?.toArray === "function"
+                  ? rawEmbedding.toArray()
+                  : Array.isArray(rawEmbedding)
+                    ? rawEmbedding
+                    : [];
+
+              if (vectorB.length > 0 && queryEmbedding.length > 0) {
+                let dot = 0;
+                const len = Math.min(queryEmbedding.length, vectorB.length);
+                for (let i = 0; i < len; i++) {
+                  dot += queryEmbedding[i] * (vectorB[i] || 0);
+                }
+                realScore = dot;
+              } else {
+                console.warn(
+                  `[Search] Doc ${doc.id} has no usable embedding vector; score=0.`,
+                );
+              }
+            } catch (e) {
+              console.error(
+                `[Search] Failed vector math for doc ${doc.id}:`,
+                e,
+              );
+            }
+
+            return { id: doc.id, data: d, rawScore: realScore };
+          });
+        } catch (vecErr) {
+          vectorSearchFailed = true;
+          console.error(
+            "[Search] Vector findNearest call FAILED; falling back to keyword search:",
+            vecErr,
+          );
+        }
+      }
+
+      // 🚀 PHASE C.1: KEYWORD FALLBACK
+      // Triggered when vector search produced no usable candidates, either
+      // because the embedding call failed, the findNearest call failed, or
+      // the corpus simply has no vectorized matches yet.
+      if (vectorResults.length === 0) {
+        console.warn(
+          `[Search] No vector candidates (failed=${vectorSearchFailed}); engaging keyword fallback.`,
+        );
+        try {
+          const fallbackSnap = await creatorsRef.limit(200).get();
+          const queryTokens = new Set(
+            tokenize(`${intent.cleanPrompt} ${(intent.skills || []).join(" ")}`),
+          );
+          const scored = fallbackSnap.docs
+            .map((doc) => {
+              const d = doc.data();
+              const score = keywordScore(queryTokens, d);
+              return { id: doc.id, data: d, rawScore: score };
+            })
+            .filter((r) => r.rawScore > 0)
+            .sort((a, b) => b.rawScore - a.rawScore)
+            .slice(0, Math.max(limit * 3, 30));
+          vectorResults = scored;
+          console.log(
+            `[Search] Keyword fallback produced ${vectorResults.length} candidate(s).`,
+          );
+        } catch (fallbackErr) {
+          console.error("[Search] Keyword fallback also failed:", fallbackErr);
+        }
+      }
+
+      // 🚀 PHASE C.2: SOFT POST-FILTERS & SCORING ADJUSTMENTS
+      const preAvailability = vectorResults.length;
+      // Treat creators with no `isAvailable` field as available; only drop
+      // those explicitly set to false.
+      vectorResults = vectorResults.filter(
+        (r) => r.data.isAvailable !== false,
+      );
+      console.log(
+        `[Search] Availability filter: ${preAvailability} -> ${vectorResults.length} (dropped only explicit false).`,
       );
 
       if (intent.budgetLimit && intent.budgetLimit > 0) {
+        const preBudget = vectorResults.length;
+        // Soft penalty rather than hard drop: keep over-budget creators but
+        // halve their score so within-budget peers float to the top.
+        vectorResults = vectorResults.map((r) => {
+          const rate = Number(r.data.hourlyRate);
+          if (Number.isFinite(rate) && rate > (intent.budgetLimit as number)) {
+            return { ...r, rawScore: r.rawScore * 0.5 };
+          }
+          return r;
+        });
         console.log(
-          `Agent enforcing budget constraint: <= ${intent.budgetLimit}`,
-        );
-        filteredQuery = filteredQuery.where(
-          "hourlyRate",
-          "<=",
-          intent.budgetLimit,
+          `[Search] Budget soft-penalty applied (limit=${intent.budgetLimit}); kept ${vectorResults.length}/${preBudget} candidates.`,
         );
       }
 
-      const vectorQuery = filteredQuery.findNearest(
-        "embedding",
-        FieldValue.vector(queryEmbedding),
-        {
-          limit,
-          distanceMeasure: "COSINE",
-        },
-      );
+      vectorResults.sort((a, b) => b.rawScore - a.rawScore);
+      vectorResults = vectorResults.slice(0, limit);
 
-      const snapshot = await vectorQuery.get();
-      const results = snapshot.docs.map((doc) => {
-        const d = doc.data();
-        const rawEmbedding = d.embedding;
-        let realScore = 0.5; // Fallback low boundary
-
-        try {
-          // Firestore admin provides a VectorValue type which can be accessed via toArray()
-          // or it may arrive as a plain native array depending on runtime context.
-          const vectorB: number[] = typeof rawEmbedding?.toArray === 'function' 
-            ? rawEmbedding.toArray() 
-            : Array.isArray(rawEmbedding) ? rawEmbedding : [];
-
-          if (vectorB.length > 0 && queryEmbedding.length > 0) {
-            // Google's text-embedding-004 are normalized. Dot product === Cosine Similarity.
-            let dot = 0;
-            const len = Math.min(queryEmbedding.length, vectorB.length);
-            for (let i = 0; i < len; i++) {
-              dot += queryEmbedding[i] * (vectorB[i] || 0);
-            }
-            realScore = dot;
-          }
-        } catch (e) {
-          console.error(`Failed vector math for doc ${doc.id}:`, e);
-        }
-
-        // Strip heavy vector from standard response payloads to minimize bandwidth
-        const { embedding: _discard, ...publicData } = d;
+      const results = vectorResults.map(({ id, data, rawScore }) => {
+        // Strip heavy vector from standard response payloads to minimize bandwidth.
+        const { embedding: _discard, ...publicData } = data;
         void _discard;
 
         return {
-          id: doc.id,
+          id,
           displayName: publicData.displayName,
           bio: publicData.bio,
           skills: publicData.skills,
           ...publicData,
-          computedMatchScore: Number(realScore.toFixed(4)),
+          computedMatchScore: Number(rawScore.toFixed(4)),
+          hasEmbedding: !!data.embedding,
         };
       });
+
+      console.log(
+        `[Search] Final candidate scores (top ${Math.min(results.length, 5)}):`,
+        results.slice(0, 5).map((r) => {
+          const rec = r as Record<string, unknown>;
+          return {
+            id: r.id,
+            name: r.displayName,
+            score: r.computedMatchScore,
+            hourlyRate: rec.hourlyRate,
+          };
+        }),
+      );
 
       // 🚀 PHASE D: ELITE RERANKING (Gemini Verification Layer)
       // Harness Gemini's deep comprehension to surgically excise high-similarity semantic noise.
@@ -396,15 +566,40 @@ Output Instructions: Output ONLY the flat JSON array of matching indices.`;
 
           const validIndices = JSON.parse(rawText);
           if (Array.isArray(validIndices)) {
-             const parsedIndices = validIndices.map(n => Number(n)).filter(n => !isNaN(n));
-             finalMatches = results.filter((_, i) => parsedIndices.includes(i));
-             console.log(`[Reranker] Successfully pruned candidates down to ${finalMatches.length} confirmed matches.`);
+            const parsedIndices = validIndices
+              .map((n) => Number(n))
+              .filter((n) => !isNaN(n));
+            const reranked = results.filter((_, i) =>
+              parsedIndices.includes(i),
+            );
+            if (reranked.length === 0) {
+              // Reranker returned an empty set — this often happens when the
+              // gatekeeper LLM is overly strict. Prefer showing the raw
+              // semantic candidates over an empty radar.
+              console.warn(
+                "[Reranker] Returned 0 matches; keeping unfiltered semantic results to avoid an empty radar.",
+              );
+              finalMatches = results;
+            } else {
+              finalMatches = reranked;
+              console.log(
+                `[Reranker] Pruned candidates ${results.length} -> ${finalMatches.length}.`,
+              );
+            }
           } else {
-             finalMatches = []; // Force strict zero on invalid shape
+            console.warn(
+              "[Reranker] Invalid response shape; keeping unfiltered semantic results.",
+            );
+            finalMatches = results;
           }
         } catch (rerankErr) {
-          console.error("Gatekeeper layer CRITICALLY degraded! Locking down security perimeter to ZERO results:", rerankErr);
-          finalMatches = []; // HARD LOCKDOWN: If AI crashes, nobody passes the gate!
+          // Soft degradation: if the gatekeeper crashes, fall back to the
+          // unfiltered semantic results rather than silently zeroing the UI.
+          console.error(
+            "[Reranker] Gatekeeper failed; falling back to unfiltered semantic results:",
+            rerankErr,
+          );
+          finalMatches = results;
         }
       }
 

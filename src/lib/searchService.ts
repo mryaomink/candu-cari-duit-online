@@ -1,6 +1,6 @@
 import { functions, db } from './firebase';
 import { httpsCallable } from 'firebase/functions';
-import { collection, getDocs, query, where, limit, GeoPoint, Timestamp } from 'firebase/firestore';
+import { collection, getDocs, query, limit, GeoPoint, Timestamp } from 'firebase/firestore';
 import type { RadarNode, Creator, CloudinaryImage, CreatorTier } from '@/types';
 import { getMatchColor, TIER_CONFIG } from '@/types';
 import { latLngToRadarPosition, haversineDistanceKm } from './geo';
@@ -31,6 +31,8 @@ export interface RawCreator {
   location?: FirestoreGeoLike;
   portfolioImages?: CloudinaryImage[];
   computedMatchScore?: number;
+  hasEmbedding?: boolean;
+  vectorizedAt?: Timestamp;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -81,6 +83,20 @@ export async function nlpSearch(
   const insights: SearchAiInsights | null = result.data.aiInsights || null;
   const intent: ExtractedSearchIntent | null = result.data.extractedIntent || null;
 
+  // Drop creators that almost certainly have no usable embedding so the
+  // radar stays honest about the semantic match. We treat the result as
+  // valid if either the backend confirmed an embedding (`hasEmbedding`) or
+  // a `vectorizedAt` timestamp is present.
+  const before = creators.length;
+  creators = creators.filter((c) =>
+    Boolean(c.hasEmbedding) || Boolean(c.vectorizedAt),
+  );
+  if (creators.length !== before) {
+    console.warn(
+      `[nlpSearch] Dropped ${before - creators.length} creator(s) missing embedding metadata.`,
+    );
+  }
+
   // TEMPORARY FIX: Commented out self-exclusion to allow testing with own account profile.
   // if (excludeUid) {
   //   creators = creators.filter((c) => (c.id || c.uid) !== excludeUid);
@@ -93,6 +109,11 @@ export async function nlpSearch(
 /**
  * fetchAllCreators
  * Fallback / Initial load generator fetching real records from Firestore.
+ *
+ * We deliberately avoid a server-side `where('isAvailable', '==', true)`
+ * filter: legacy creator docs that predate the availability field would be
+ * excluded entirely. Instead we fetch a broader window and apply the
+ * availability check client-side, treating missing values as available.
  */
 export async function fetchAllCreators(
   clientLat: number,
@@ -100,13 +121,16 @@ export async function fetchAllCreators(
   excludeUid?: string
 ): Promise<RadarNode[]> {
   const creatorsRef = collection(db, 'creators');
-  const q = query(creatorsRef, where('isAvailable', '==', true), limit(50));
-  
+  const q = query(creatorsRef, limit(50));
+
   const snapshot = await getDocs(q);
   let creators: RawCreator[] = snapshot.docs.map((doc) => ({
     id: doc.id,
     ...(doc.data() as RawCreator),
   }));
+
+  // Soft availability filter: drop only explicit `false`.
+  creators = creators.filter((c) => c.isAvailable !== false);
 
   if (excludeUid) {
     creators = creators.filter((c) => c.id !== excludeUid);

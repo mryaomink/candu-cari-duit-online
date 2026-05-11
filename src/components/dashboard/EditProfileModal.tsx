@@ -2,10 +2,39 @@
 import { useState, useRef } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { db, functions } from '@/lib/firebase';
-import { doc, updateDoc, serverTimestamp, Timestamp, setDoc } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, Timestamp, setDoc, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { logError } from '@/lib/logger';
 import type { CloudinaryImage } from '@/types';
+
+/**
+ * pollCreatorEmbedding
+ * Polls the creator document waiting for the `onCreatorProfileWrite` trigger
+ * to refresh the `vectorizedAt` timestamp past `savedAtMs`. Returns true if
+ * the embedding was regenerated within the timeout window.
+ */
+async function pollCreatorEmbedding(
+  uid: string,
+  savedAtMs: number,
+  timeoutMs = 15000,
+  intervalMs = 1500,
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const snap = await getDoc(doc(db, 'creators', uid));
+      const data = snap.data();
+      const vAt = data?.vectorizedAt as Timestamp | undefined;
+      if (vAt && vAt.toMillis() >= savedAtMs - 1000) {
+        return true;
+      }
+    } catch {
+      // Swallow transient permission/network errors; keep polling.
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
+}
 
 interface EditModalProps {
   isOpen: boolean;
@@ -28,6 +57,9 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
   const [loading, setLoading] = useState(false);
   const [enhancingBio, setEnhancingBio] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [embeddingStatus, setEmbeddingStatus] = useState<
+    'idle' | 'pending' | 'ready' | 'timeout'
+  >('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen || !user) return null;
@@ -119,14 +151,15 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
       };
 
       await updateDoc(docRef, updatePayload);
-      
+
       const creatorRef = doc(db, 'creators', user.uid);
       const embeddingText = `${user.displayName} | ${bio} | ${skillsArr.join(', ')} | Lokasi: ${user.city}, ${user.province}`;
+      const savedAtMs = Date.now();
 
       await updateDoc(creatorRef, {
         ...updatePayload,
         portfolioEmbeddingText: embeddingText,
-      }).catch(async (e) => {
+      }).catch(async () => {
         await setDoc(creatorRef, {
           uid: user.uid,
           displayName: user.displayName,
@@ -146,7 +179,38 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
         updatedAt: Timestamp.now(),
       } as any);
 
-      showToast('Sip! Profil kamu sudah diperbarui.', 'success');
+      showToast('Sip! Profil kamu tersimpan. Mesin pencari sedang memperbarui sidik jari AI kamu…', 'success');
+      setEmbeddingStatus('pending');
+
+      // Confirm the onCreatorProfileWrite trigger actually regenerated the
+      // vector. If it doesn't update vectorizedAt within ~15s the embedding
+      // refresh likely failed silently and search relevance will be stale.
+      pollCreatorEmbedding(user.uid, savedAtMs)
+        .then((ok) => {
+          if (ok) {
+            setEmbeddingStatus('ready');
+            showToast('Sidik jari AI kamu sudah diperbarui. Kamu siap muncul di pencarian.', 'success');
+          } else {
+            setEmbeddingStatus('timeout');
+            showToast(
+              'Profil tersimpan, tapi pembaruan sidik jari AI agak lambat. Pencarianmu mungkin masih pakai versi lama beberapa saat.',
+              'error',
+            );
+            logError(
+              'AI_PARSE_ERROR',
+              'Embedding regeneration did not complete within timeout',
+              { uid: user.uid },
+            );
+          }
+        })
+        .catch((pollErr) => {
+          setEmbeddingStatus('timeout');
+          logError('AI_PARSE_ERROR', 'Polling embedding status failed', {
+            err: pollErr,
+            uid: user.uid,
+          });
+        });
+
       onClose();
     } catch (err) {
       logError('FIRESTORE_WRITE_ERROR', 'Save profile failed', { err });
@@ -316,6 +380,30 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
               style={{ display: 'none' }} 
             />
           </div>
+
+          {embeddingStatus !== 'idle' && (
+            <div
+              style={{
+                fontSize: 11,
+                padding: '6px 10px',
+                borderRadius: 6,
+                background:
+                  embeddingStatus === 'timeout'
+                    ? 'rgba(239, 68, 68, 0.12)'
+                    : 'rgba(59, 130, 246, 0.12)',
+                color:
+                  embeddingStatus === 'timeout'
+                    ? '#f87171'
+                    : embeddingStatus === 'ready'
+                      ? '#4ade80'
+                      : '#93c5fd',
+              }}
+            >
+              {embeddingStatus === 'pending' && 'Sidik jari AI sedang diperbarui di latar belakang…'}
+              {embeddingStatus === 'ready' && 'Sidik jari AI sudah diperbarui.'}
+              {embeddingStatus === 'timeout' && 'Sidik jari AI lambat diperbarui. Coba simpan ulang nanti.'}
+            </div>
+          )}
 
           <div style={{ marginTop: 'var(--space-2)', display: 'flex', gap: 'var(--space-3)' }}>
             <button type="button" className="btn btn-ghost" style={{ flex: 1 }} onClick={onClose}>Batal</button>
