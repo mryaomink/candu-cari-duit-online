@@ -41,11 +41,16 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
     
     setEnhancingBio(true);
     try {
-      const enhanceFunc = httpsCallable<{ text: string }, { enhancedText: string }>(functions, 'enhanceBio');
-      const result = await enhanceFunc({ text: bio });
+      const enhanceFunc = httpsCallable<{ text: string, displayName?: string, city?: string, skills?: string }, { enhancedText: string }>(functions, 'enhanceBio');
+      const result = await enhanceFunc({ 
+        text: bio,
+        displayName: user.displayName,
+        city: user.city,
+        skills: skillsInput
+      });
       if (result.data?.enhancedText) {
         setBio(result.data.enhancedText);
-        showToast('✨ Bio berhasil diperkuat oleh Gemini 3.1!', 'success');
+        showToast('✨ Bio cerdas berhasil diperkuat!', 'success');
       }
     } catch (err) {
       console.error("AI bio fail:", err);

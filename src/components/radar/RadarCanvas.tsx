@@ -52,6 +52,36 @@ function CenterPulse() {
   );
 }
 
+// ─── Dynamic Radar Scanning Pulse ──────────────────────────────────────────
+function RadarScanWave() {
+  const ringRef = useRef<THREE.Mesh>(null);
+  const isSearching = useAppStore((s) => s.isSearching);
+
+  useFrame((state) => {
+    if (!ringRef.current) return;
+    const t = state.clock.getElapsedTime();
+    const mat = ringRef.current.material as THREE.MeshBasicMaterial;
+    
+    if (isSearching) {
+      const loopT = (t % 1.2) / 1.2;
+      const currentScale = 0.5 + loopT * 18;
+      ringRef.current.scale.set(currentScale, currentScale, 1);
+      mat.opacity = (1 - loopT) * 0.6;
+    } else {
+      const idleScale = 4 + Math.sin(t * 0.5) * 0.5;
+      ringRef.current.scale.lerp(new THREE.Vector3(idleScale, idleScale, 1), 0.05);
+      mat.opacity = THREE.MathUtils.lerp(mat.opacity, 0.05, 0.05);
+    }
+  });
+
+  return (
+    <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+      <ringGeometry args={[0.98, 1.0, 64]} />
+      <meshBasicMaterial color="#00D8FF" transparent opacity={0} depthWrite={false} />
+    </mesh>
+  );
+}
+
 // ─── Single Creator Node ──────────────────────────────────────────────────────
 function CreatorNode({ node }: { node: RadarNode }) {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -59,39 +89,65 @@ function CreatorNode({ node }: { node: RadarNode }) {
   const isHovered = hoveredNodeId === node.creatorId;
   const tierCfg = TIER_CONFIG[node.creator.tier];
 
+  // 🤖 AI DRIVEN DYNAMICS
+  const isAiMatch = node.matchScore > 0.6; // Default baseline is usually 0.5
+  // Scale expands exponentially up to 3x based on vector similarity
+  const aiScaleMultiplier = isAiMatch ? 1 + (node.matchScore - 0.6) * 3 : 1;
   const color = new THREE.Color(node.glowColor);
+  
   const sizeMap = { small: 0.12, medium: 0.18, large: 0.25 };
-  const size = sizeMap[node.creator.nodeSize];
+  const baseSize = sizeMap[node.creator.nodeSize];
+  const finalSize = baseSize * aiScaleMultiplier;
 
   const orbitRef = useRef<THREE.Group>(null);
-  // Random orbit speed based on ID string
-  const orbitSpeed = useMemo(() => (Math.random() * 0.05 + 0.01) * (Math.random() > 0.5 ? 1 : -1), []);
+  // Matching nodes orbit slightly faster to catch attention
+  const orbitSpeed = useMemo(() => {
+    const base = (Math.random() * 0.04 + 0.01) * (Math.random() > 0.5 ? 1 : -1);
+    return isAiMatch ? base * 1.5 : base;
+  }, [isAiMatch]);
 
   useFrame((state, delta) => {
     if (orbitRef.current && !isHovered) {
       orbitRef.current.rotation.y += orbitSpeed * delta;
     }
     if (!meshRef.current) return;
-    const t = Date.now() * 0.002;
-    meshRef.current.position.y = Math.sin(t + node.creatorId.charCodeAt(0)) * 0.05;
     
-    if (isHovered) {
-      meshRef.current.scale.lerp(new THREE.Vector3(1.4, 1.4, 1.4), delta * 8);
-    } else {
-      meshRef.current.scale.lerp(new THREE.Vector3(1, 1, 1), delta * 8);
-    }
+    const t = state.clock.getElapsedTime();
+    // High matches get a dynamic heartbeat pulse rhythm
+    const pulseScale = isAiMatch ? 1 + Math.sin(t * 5) * 0.05 : 1;
+    
+    // Floating hover idle animation
+    meshRef.current.position.y = Math.sin(t * 1.5 + node.creatorId.charCodeAt(0)) * 0.06;
+    
+    const targetScale = isHovered ? 1.4 * pulseScale : 1 * pulseScale;
+    meshRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), delta * 8);
   });
 
   return (
     <group ref={orbitRef}>
       <group position={node.position3D}>
+      {/* Dynamic AI Glow Ring */}
+      {isAiMatch && (
+        <mesh rotation={[Math.PI/2, 0, 0]}>
+          <torusGeometry args={[finalSize * 1.8, 0.015, 16, 50]} />
+          <meshStandardMaterial
+            color={color}
+            emissive={color}
+            emissiveIntensity={10}
+            toneMapped={false}
+            transparent
+            opacity={0.7}
+          />
+        </mesh>
+      )}
+
       {/* Glow halo */}
       <mesh>
-        <sphereGeometry args={[size * 2.5, 16, 16]} />
+        <sphereGeometry args={[finalSize * 2.5, 16, 16]} />
         <meshBasicMaterial
           color={color}
           transparent
-          opacity={isHovered ? 0.08 : 0.04 * node.creator.nodeGlowIntensity}
+          opacity={isHovered ? 0.12 : (isAiMatch ? 0.08 : 0.04) * node.creator.nodeGlowIntensity}
         />
       </mesh>
 
@@ -106,11 +162,11 @@ function CreatorNode({ node }: { node: RadarNode }) {
         onPointerOut={() => setHoveredNodeId(null)}
         castShadow
       >
-        <sphereGeometry args={[size, 20, 20]} />
+        <sphereGeometry args={[finalSize, 24, 24]} />
         <meshStandardMaterial
           color={color}
           emissive={color}
-          emissiveIntensity={isHovered ? 6 : 3 * node.creator.nodeGlowIntensity}
+          emissiveIntensity={isHovered ? 8 : (isAiMatch ? 5 : 3) * node.creator.nodeGlowIntensity}
           roughness={0}
           metalness={0.8}
           toneMapped={false}
@@ -120,7 +176,7 @@ function CreatorNode({ node }: { node: RadarNode }) {
       {/* Line connection REMOVED as per user request for WOW clean factor */}
 
       {/* Persistent Basic Label (Visible always, expands on hover) */}
-      <Html center distanceFactor={8} zIndexRange={[1, 5]} position={[0, size + 0.2, 0]}>
+      <Html center distanceFactor={8} zIndexRange={[1, 5]} position={[0, finalSize + 0.2, 0]}>
         <div
           style={{
             background: isHovered ? 'rgba(10, 15, 30, 0.95)' : 'rgba(10, 15, 30, 0.5)',
@@ -277,6 +333,7 @@ export default function RadarCanvas() {
           <Suspense fallback={null}>
             <SceneLighting />
             <CenterPulse />
+            <RadarScanWave />
             <CreatorNodes />
             <SpaceDust />
             <Stars radius={100} depth={60} count={3000} factor={4} fade speed={1} />

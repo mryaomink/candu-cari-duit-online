@@ -21,13 +21,12 @@ const projectId =
   process.env.GOOGLE_CLOUD_PROJECT ||
   process.env.GCLOUD_PROJECT ||
   "candu-project";
-const location = process.env.GOOGLE_CLOUD_LOCATION || "global";
 
 // ─── Google Gen AI SDK client (Gemini Enterprise Agent Platform) ────────────
 const ai = new GoogleGenAI({
   vertexai: true,
   project: projectId,
-  location,
+  location: "us-central1", // Force stable region for Enterprise Generative APIs
 });
 
 // Use the stable GA model. `gemini-3-flash-preview` requires per-project
@@ -207,11 +206,8 @@ export const searchCreators = onCall(
       const intent = await searchAgent.parseQueryIntent(prompt);
       console.log("Agent extracted intent:", intent);
 
-      // 🚀 PHASE B: PARALLEL EXECUTION (Embeddings & Regional Trends)
-      const [queryEmbedding, trendData] = await Promise.all([
-        generateEmbedding(intent.cleanPrompt),
-        searchAgent.generateRegionalTrends(intent.cleanPrompt, city),
-      ]);
+      // 🚀 PHASE B: RETRIEVAL (Query Vectorization)
+      const queryEmbedding = await generateEmbedding(intent.cleanPrompt);
 
       if (queryEmbedding === null) {
         throw new Error("Failed generating query vector.");
@@ -220,7 +216,7 @@ export const searchCreators = onCall(
         throw new Error("Empty query vector generated.");
       }
 
-      // 🚀 PHASE C: AGENT LOGICAL FILTER INJECTION
+      // 🚀 PHASE C: AGENT LOGICAL FILTER & VECTOR MATCHING
       const creatorsRef = db.collection("creators");
       let filteredQuery: FirebaseFirestore.Query = creatorsRef.where(
         "isAvailable",
@@ -239,7 +235,6 @@ export const searchCreators = onCall(
         );
       }
 
-      // 🚀 PHASE D: VERTEX RAG VECTOR RETRIEVAL
       const vectorQuery = filteredQuery.findNearest(
         "embedding",
         FieldValue.vector(queryEmbedding),
@@ -256,10 +251,28 @@ export const searchCreators = onCall(
         void _embedding;
         return {
           id: doc.id,
+          displayName: publicData.displayName,
+          bio: publicData.bio,
+          skills: publicData.skills,
           ...publicData,
           computedMatchScore: Math.max(0.6, 0.95 - idx * 0.02),
         };
       });
+
+      // 🚀 PHASE D: GENERATION (RAG Synthesis with Search Grounding)
+      // Feed actual Top 3 matching profiles to the reasoning engine.
+      const topMatchesForAi = results.slice(0, 3).map((r) => ({
+        displayName: String(r.displayName || "Anon"),
+        bio: String(r.bio || ""),
+        skills: Array.isArray(r.skills) ? r.skills : [],
+      }));
+
+      console.log("Invoking Enterprise RAG engine with local context facts...");
+      const trendData = await searchAgent.generateRegionalTrends(
+        intent.cleanPrompt,
+        city,
+        topMatchesForAi,
+      );
 
       return {
         status: "success",
@@ -374,7 +387,8 @@ export const enhanceBio = onCall(async (request) => {
     throw new HttpsError("unauthenticated", "Authentication required.");
   }
 
-  const rawInput = request.data.text;
+  const { text: rawInput, displayName, city, skills } = request.data || {};
+
   if (!rawInput || typeof rawInput !== "string") {
     throw new HttpsError(
       "invalid-argument",
@@ -382,20 +396,39 @@ export const enhanceBio = onCall(async (request) => {
     );
   }
 
-  const sysPrompt = `Anda adalah copywriter karir profesional.
-Tugas Anda adalah mengubah input sederhana pengguna menjadi BIOGRAFI PROFIL PROFESIONAL yang sangat menarik untuk dipajang di platform jasa.
-Buat teks menjadi mengalir, percaya diri, dan fokus pada nilai tambah bagi klien.
-Gunakan Bahasa Indonesia profesional. Batasi maksimal 2-3 kalimat padat.
+  // Dynamic context injection
+  const contextPrompt = `
+CREATOR CONTEXT:
+- Name: ${displayName || "Kreator"}
+- Location: ${city || "Indonesia"}
+- Expertise Skills: ${skills || "Umum"}
+`;
 
-Input Pengguna: "${rawInput}"
+  const sysPrompt = `You are an elite Career Copywriter and Brand Strategist.
+Your task is to transform basic input into a MAGNETIC, conversion-optimized professional profile summary.
 
-Balasan Anda HANYA berisi teks biografi tersebut, tanpa embel-embel percakapan lain.`;
+${contextPrompt}
+
+DRAFT INPUT FROM USER: "${rawInput}"
+
+COPYWRITING FRAMEWORK TO USE:
+1. Powerful Hook: Open with a very strong value proposition immediately.
+2. Depth & Skill: Weave the user's expertise into an engaging narrative. Highlight ${city || "their locality"} as an active market presence.
+3. Smooth CTA: Sound professional, reliable, and ready to act.
+
+CRITICAL CONSTRAINTS:
+- Write in fluent, modern, and highly persuasive BAHASA INDONESIA.
+- Length: Make it slightly more detailed and robust. About 3 to 4 well-crafted sentences. DO NOT be overly brief.
+- DO NOT output any conversational meta-talk. Output ONLY the enhanced final text.`;
 
   try {
     const response = await ai.models.generateContent({
       model: PRO_MODEL,
       contents: sysPrompt,
-      config: { temperature: 0.8, maxOutputTokens: 200 },
+      config: { 
+        temperature: 0.85, 
+        maxOutputTokens: 600, // Boost capacity for richness
+      },
     });
 
     const enhancedText = response.text?.trim();

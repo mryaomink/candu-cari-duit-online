@@ -39,6 +39,8 @@ export interface SearchAiInsights {
   trends: string[];
   matchReasoning: string;
   detectedIndustry: string;
+  strategicTip?: string;
+  marketPulse?: string;
 }
 
 export interface ExtractedSearchIntent {

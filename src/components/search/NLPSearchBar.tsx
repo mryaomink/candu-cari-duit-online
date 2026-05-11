@@ -50,6 +50,7 @@ export default function NLPSearchBar() {
 
     setIsSearching(true);
     setSearchError(null);
+    setNodes([]); // Dramatically clear existing view to prep for AI visual reveal!
     const startTime = Date.now();
 
     try {

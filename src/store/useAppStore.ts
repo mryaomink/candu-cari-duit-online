@@ -34,7 +34,7 @@ interface SearchSlice {
   searchError: string | null;
   radiusKm: number;
   lastSearchAt: number | null;
-  aiInsights: { trends: string[], matchReasoning: string, detectedIndustry: string } | null;
+  aiInsights: { trends: string[], matchReasoning: string, detectedIndustry: string, strategicTip?: string, marketPulse?: string } | null;
   setPrompt: (prompt: string) => void;
   setAiInsights: (v: SearchSlice['aiInsights']) => void;
   setParsedIntent: (intent: ParsedSearchIntent | null) => void;
