@@ -30,10 +30,13 @@ export interface RegionalTrends {
  * AGENT CONFIGURATION
  */
 const CONFIG = {
-  PROJECT: process.env.GOOGLE_CLOUD_PROJECT || "endless-memento-495505-f2",
+  PROJECT:
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    process.env.GCLOUD_PROJECT ||
+    "candu-project",
   LOCATION: "us-central1",
   MODEL: "gemini-2.5-flash",
-  RETRY_ATTEMPTS: 2
+  RETRY_ATTEMPTS: 2,
 };
 
 const ai = new GoogleGenAI({
