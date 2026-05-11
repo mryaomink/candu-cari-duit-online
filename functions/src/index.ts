@@ -210,25 +210,37 @@ function emptyCompetencies(): DistilledCompetencies {
   };
 }
 
+interface CvArtifact {
+  url?: string;
+  secure_url?: string;
+  format?: string;
+}
+
 /**
  * distillCreatorContent (Multimodal Upgrade — Structured Output)
- * Sends bio + skills + up to 3 portfolio artifacts to Gemini Flash and forces
- * a JSON response via function calling. The structured output is persisted on
- * the creator doc as `provenCompetencies` for downstream UI badges and
- * search-time ranking boosts. A flattened keyword string is also returned so
- * `generateEmbedding` keeps working unchanged.
+ * Sends bio + skills + optional CV PDF + up to 3 portfolio image artifacts to
+ * Gemini Flash and forces a JSON response via function calling. The structured
+ * output is persisted on the creator doc as `provenCompetencies` for
+ * downstream UI badges and search-time ranking boosts. A flattened keyword
+ * string is also returned so `generateEmbedding` keeps working unchanged.
  */
 async function distillCreatorContent(
   bio: string,
   skills: string[],
-  portfolio: any[] = []
+  portfolio: any[] = [],
+  cvDocument: CvArtifact | null = null,
 ): Promise<DistillationResult> {
   const safeBio = bio || "";
   const safeSkills = Array.isArray(skills) ? skills : [];
+  const hasCv = !!(cvDocument && (cvDocument.url || cvDocument.secure_url));
+
+  const cvHint = hasCv
+    ? "The FIRST attached artifact is the creator's CV/resume (PDF). Use it as a source of stated experience and education, then CROSS-CHECK those claims against the remaining portfolio image artifacts. Only mark a skill as 'proven' when at least one portfolio image (NOT just the CV alone) shows evidence of it. Treat CV-only claims as unverified.\n"
+    : "";
 
   const textPrompt = `You are an Elite Competency Extractor for the CANDU hyperlocal creator marketplace.
-Task: Analyze the provided creator profile (Bio/Skills) AND their actual visual portfolio artifacts (Images/Docs).
-Objective: Distinguish CLAIMED capabilities from PROVEN ones — only list a skill under "proven_skills" if at least one portfolio artifact clearly demonstrates it. List visual aesthetic markers under "style_tags". Score overall visual quality (composition, resolution, professionalism) in [0,1]. Flag concerning artifacts under "red_flags" (watermarked stock, suspected AI-generated, very low resolution, off-topic).
+${cvHint}Task: Analyze the provided creator profile (Bio/Skills${hasCv ? " + CV" : ""}) AND their actual visual portfolio artifacts.
+Objective: Distinguish CLAIMED capabilities from PROVEN ones — only list a skill under "proven_skills" if at least one portfolio artifact clearly demonstrates it. List visual aesthetic markers under "style_tags". Score overall visual quality (composition, resolution, professionalism) in [0,1]. Flag concerning artifacts under "red_flags" (watermarked stock, suspected AI-generated, very low resolution, off-topic, CV/portfolio mismatch).
 You MUST invoke the 'record_competencies' function with the parsed data. Output ONLY the function call.
 
 Bio: ${safeBio}
@@ -236,13 +248,26 @@ Claimed Skills: ${safeSkills.join(", ")}
 `;
 
   try {
-    // Extract latest 3 artifacts to manage token window & latency. Tier-aware
-    // distillation is a Phase 2 concern.
-    const activeMedia = portfolio.slice(0, 3);
-    const mediaPartsPromises = activeMedia.map(async (item: any) => {
-      const url = item.secure_url || item.url;
-      if (!url) return null;
-      return fetchToInlineData(url, item.format || "jpeg");
+    // CV is always the first artifact when present (so the prompt's positional
+    // language above is accurate), followed by up to 3 portfolio images.
+    // Tier-aware artifact budgets are a later concern.
+    const orderedArtifacts: CvArtifact[] = [];
+    if (hasCv && cvDocument) {
+      orderedArtifacts.push({
+        url: cvDocument.url || cvDocument.secure_url,
+        format: cvDocument.format || "pdf",
+      });
+    }
+    for (const item of portfolio.slice(0, 3)) {
+      orderedArtifacts.push({
+        url: item.secure_url || item.url,
+        format: item.format || "jpeg",
+      });
+    }
+
+    const mediaPartsPromises = orderedArtifacts.map(async (item) => {
+      if (!item.url) return null;
+      return fetchToInlineData(item.url, item.format || "jpeg");
     });
 
     const resolvedParts = (await Promise.all(mediaPartsPromises)).filter(Boolean);
@@ -253,7 +278,7 @@ Claimed Skills: ${safeSkills.join(", ")}
     });
 
     console.log(
-      `[Distill] Sending prompt with ${resolvedParts.length} multimodal artifact(s).`,
+      `[Distill] Sending prompt with ${resolvedParts.length} multimodal artifact(s) (cv=${hasCv ? "yes" : "no"}).`,
     );
 
     const response = await ai.models.generateContent({
@@ -397,11 +422,13 @@ export const onCreatorProfileWrite = onDocumentWritten(
 
     if (!afterData) return; // Deletions handled by index
 
+    const cvKey = (cv: any) => cv?.publicId || cv?.url || "";
     const compositeText = [
       afterData.displayName || "",
       afterData.bio || "",
       ...(afterData.skills || []),
       ...(afterData.portfolioImages || []).map((p: any) => p.publicId || p.url),
+      `cv:${cvKey(afterData.cvDocument)}`,
     ].join(" | ");
 
     const oldComposite = beforeData
@@ -410,6 +437,7 @@ export const onCreatorProfileWrite = onDocumentWritten(
           beforeData.bio || "",
           ...(beforeData.skills || []),
           ...(beforeData.portfolioImages || []).map((p: any) => p.publicId || p.url),
+          `cv:${cvKey(beforeData.cvDocument)}`,
         ].join(" | ")
       : "";
 
@@ -426,6 +454,7 @@ export const onCreatorProfileWrite = onDocumentWritten(
       afterData.bio || "",
       afterData.skills || [],
       afterData.portfolioImages || [],
+      afterData.cvDocument || null,
     );
     const finalIndexingText = `${afterData.displayName} | ${distilledText}`;
 

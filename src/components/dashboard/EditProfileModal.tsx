@@ -5,7 +5,7 @@ import { db, functions } from '@/lib/firebase';
 import { doc, updateDoc, serverTimestamp, Timestamp, setDoc, getDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { logError } from '@/lib/logger';
-import type { CloudinaryImage } from '@/types';
+import type { CloudinaryImage, CloudinaryDocument } from '@/types';
 
 /**
  * pollCreatorEmbedding
@@ -53,14 +53,19 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
   // Modern states for advanced capabilities
   const [isAvailable, setIsAvailable] = useState<boolean>(user && 'isAvailable' in user ? (user as any).isAvailable : true);
   const [portfolioImages, setPortfolioImages] = useState<CloudinaryImage[]>(user?.portfolioImages || []);
-  
+  const [cvDocument, setCvDocument] = useState<CloudinaryDocument | null>(
+    user?.cvDocument ?? null,
+  );
+
   const [loading, setLoading] = useState(false);
   const [enhancingBio, setEnhancingBio] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [cvUploading, setCvUploading] = useState(false);
   const [embeddingStatus, setEmbeddingStatus] = useState<
     'idle' | 'pending' | 'ready' | 'timeout'
   >('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cvInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen || !user) return null;
 
@@ -132,6 +137,56 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
     setPortfolioImages(prev => prev.filter((_, i) => i !== idx));
   };
 
+  // CV / Resume PDF upload. Goes to a dedicated single-file slot on the
+  // creator doc so the multimodal distillation pipeline can treat it as a
+  // structured "stated experience" source separate from portfolio artifacts.
+  const handleCvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+
+    const isPdf =
+      file.type === 'application/pdf' ||
+      (file.name || '').toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      showToast('CV harus berformat PDF.', 'error');
+      if (cvInputRef.current) cvInputRef.current.value = '';
+      return;
+    }
+
+    const MAX_BYTES = 10 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      showToast('Ukuran CV maksimal 10 MB.', 'error');
+      if (cvInputRef.current) cvInputRef.current.value = '';
+      return;
+    }
+
+    setCvUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Network error during CV upload');
+
+      const doc: CloudinaryDocument = await response.json();
+      setCvDocument(doc);
+      showToast('CV berhasil diunggah!', 'success');
+    } catch (err) {
+      logError('CLOUDINARY_UPLOAD_FAILED', 'Failed uploading CV', { err });
+      showToast('Gagal mengunggah CV. Coba lagi.', 'error');
+    } finally {
+      setCvUploading(false);
+      if (cvInputRef.current) cvInputRef.current.value = '';
+    }
+  };
+
+  const removeCv = () => setCvDocument(null);
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -146,6 +201,7 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
         skills: skillsArr,
         hourlyRate: Number(price),
         portfolioImages: portfolioImages,
+        cvDocument: cvDocument ?? null,
         isAvailable: isAvailable, // Now dynamic
         updatedAt: serverTimestamp(),
       };
@@ -378,6 +434,81 @@ export default function EditProfileModal({ isOpen, onClose }: EditModalProps) {
               ref={fileInputRef}
               onChange={handleFileUpload}
               style={{ display: 'none' }} 
+            />
+          </div>
+
+          {/* CV / Resume PDF — fed into multimodal distillation as a dedicated
+              stated-experience source, separate from portfolio artifacts. */}
+          <div>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', display: 'block', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase' }}>
+              CV / Resume (PDF)
+            </label>
+
+            {cvDocument ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 'var(--space-3)', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }}>
+                <span style={{ fontSize: 22 }}>📄</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {cvDocument.filename || 'CV.pdf'}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                    {(cvDocument.bytes / 1024).toFixed(0)} KB · PDF
+                  </div>
+                </div>
+                <a
+                  href={cvDocument.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-ghost"
+                  style={{ minWidth: 'unset', padding: '4px 10px', fontSize: 11 }}
+                >
+                  Lihat
+                </a>
+                <button
+                  type="button"
+                  onClick={removeCv}
+                  className="btn btn-ghost"
+                  style={{ minWidth: 'unset', padding: '4px 10px', fontSize: 11, color: '#f87171' }}
+                >
+                  Hapus
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={cvUploading}
+                onClick={() => cvInputRef.current?.click()}
+                style={{
+                  width: '100%',
+                  padding: 'var(--space-4)',
+                  borderRadius: 8,
+                  border: '2px dashed rgba(255,255,255,0.2)',
+                  background: 'transparent',
+                  color: '#9ca3af',
+                  cursor: cvUploading ? 'wait' : 'pointer',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 4,
+                }}
+              >
+                <span style={{ fontSize: 22 }}>{cvUploading ? '⌛' : '📄'}</span>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>
+                  {cvUploading ? 'Mengunggah CV…' : 'Unggah CV (PDF, maks 10 MB)'}
+                </span>
+                <span style={{ fontSize: 10, color: '#6b7280' }}>
+                  AI akan membaca CV ini untuk memverifikasi keahlianmu.
+                </span>
+              </button>
+            )}
+
+            <input
+              type="file"
+              accept="application/pdf"
+              ref={cvInputRef}
+              onChange={handleCvUpload}
+              style={{ display: 'none' }}
             />
           </div>
 
