@@ -87,7 +87,7 @@ interface LocationSlice {
 
 // ─── UI Slice ─────────────────────────────────────────────────────────────────
 interface UISlice {
-  view: 'radar' | 'list';
+  view: 'avatar' | 'radar' | 'list';
   webglSupported: boolean;
   isPortfolioOpen: boolean;
   isAuthModalOpen: boolean;
@@ -95,7 +95,7 @@ interface UISlice {
   toast: { message: string; type: 'success' | 'error' | 'info' } | null;
   toastTimeout: ReturnType<typeof setTimeout> | null;
   featureFlags: FeatureFlags;
-  setView: (view: 'radar' | 'list') => void;
+  setView: (view: 'avatar' | 'radar' | 'list') => void;
   setWebglSupported: (v: boolean) => void;
   setPortfolioOpen: (v: boolean) => void;
   setAuthModalOpen: (v: boolean) => void;
@@ -173,7 +173,7 @@ export const useAppStore = create<AppStore>()(
         setLocationDenied: (locationDenied) => set({ locationDenied }, false, 'setLocationDenied'),
 
         // UI
-        view: 'radar',
+        view: 'avatar',
         webglSupported: true,
         isPortfolioOpen: false,
         isAuthModalOpen: false,

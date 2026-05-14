@@ -26,7 +26,8 @@ export default function NLPSearchBar() {
     setAuthModalOpen,
     firebaseUser,
     setAiInsights,
-    setActiveSearchResults
+    setActiveSearchResults,
+    setView
   } = useAppStore();
   const { activeSearchResults } = useSearchState();
 
@@ -89,7 +90,7 @@ export default function NLPSearchBar() {
     } finally {
       setIsSearching(false);
     }
-  }, [firebaseUser, lat, lng, city, setIsSearching, setSearchError, setNodes, setAiInsights, setLastSearchAt, setParsedIntent, showToast, setAuthModalOpen]);
+  }, [firebaseUser, lat, lng, city, setIsSearching, setSearchError, setNodes, setAiInsights, setLastSearchAt, setParsedIntent, showToast, setAuthModalOpen, setView]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;

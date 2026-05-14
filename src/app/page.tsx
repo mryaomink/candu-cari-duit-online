@@ -30,8 +30,14 @@ const RadarCanvas = dynamic(() => import('@/components/radar/RadarCanvas'), {
   ),
 });
 
-// ─── Unified Control Dock (Combines Nav + Search) ─────────────────────────────
-import AppShell from '@/components/layout/AppShell';
+const AvatarScene = dynamic(() => import('@/components/avatar/AvatarScene'), {
+  ssr: false,
+  loading: () => (
+    <div style={{ position: 'fixed', inset: 0, background: '#050012', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="animate-spin" style={{ fontSize: 40, color: '#7C3AED' }}>⟳</div>
+    </div>
+  ),
+});
 
 // ─── Location Bootstrap ───────────────────────────────────────────────────────
 function LocationBootstrap() {
@@ -73,26 +79,60 @@ function LocationBootstrap() {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function HomePage() {
   const { view, webglSupported, isPortfolioOpen, isAuthModalOpen } = useUIState();
+  const setView = useAppStore((s) => s.setView);
 
   return (
     <AppProvider>
       <LocationBootstrap />
       
-      <AppShell showSearch={true}>
-        {view === 'radar' && webglSupported ? (
+      {/* Base 3D Layer */}
+      <AvatarScene />
+
+      {/* Overlay Layers */}
+      {view === 'radar' && webglSupported && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: '#050012' }}>
+          <button 
+            onClick={() => setView('avatar')}
+            style={{
+              position: 'absolute', top: 32, left: 32, zIndex: 60,
+              background: 'rgba(26, 11, 46, 0.8)', border: '1px solid rgba(124, 58, 237, 0.5)',
+              color: '#fff', padding: '8px 16px', borderRadius: '20px', cursor: 'pointer',
+              backdropFilter: 'blur(8px)', fontWeight: 600
+            }}
+          >
+            ← Kembali ke Hub
+          </button>
           <RadarCanvas />
-        ) : (
-          <div style={{ height: '100%', overflowY: 'auto', padding: '40px 32px' }}>
-            <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-              <div style={{ marginBottom: 32 }}>
-                <h2 style={{ fontSize: 36, fontWeight: 900, letterSpacing: '-0.5px' }}>Available Talents</h2>
-                <p style={{ color: 'var(--color-text-muted)', fontSize: 16 }}>Jelajahi direktori kreator di sekitarmu</p>
-              </div>
-              <CreatorListView />
+        </div>
+      )}
+
+      {view === 'list' && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 50,
+          background: 'rgba(5, 0, 18, 0.8)', backdropFilter: 'blur(20px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px'
+        }}>
+          <button 
+            onClick={() => setView('avatar')}
+            style={{
+              position: 'absolute', top: 32, right: 32,
+              background: 'rgba(239, 68, 68, 0.2)', border: '1px solid rgba(239, 68, 68, 0.5)',
+              color: '#fff', width: 40, height: 40, borderRadius: '50%', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20
+            }}
+          >
+            ×
+          </button>
+          
+          <div className="glass-strong" style={{ width: '100%', maxWidth: 1000, height: '100%', maxHeight: '800px', overflowY: 'auto', padding: '32px' }}>
+            <div style={{ marginBottom: 32 }}>
+              <h2 style={{ fontSize: 36, fontWeight: 900, letterSpacing: '-0.5px', color: '#fff' }}>Daftar Talenta</h2>
+              <p style={{ color: 'var(--color-primary)', fontSize: 16 }}>Jelajahi direktori kreator di sekitarmu</p>
             </div>
+            <CreatorListView />
           </div>
-        )}
-      </AppShell>
+        </div>
+      )}
 
       {/* Global Modals */}
       {isPortfolioOpen && <PortfolioModal />}
