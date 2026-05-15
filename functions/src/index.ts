@@ -504,7 +504,7 @@ export const searchCreators = onCall(
       throw new HttpsError("unauthenticated", "Auth required.");
     }
 
-    const { prompt, limit = 25, city = "Indonesia" } = request.data;
+    const { prompt, limit = 25, city = "Indonesia", onlyVerified = false } = request.data;
     if (!prompt) {
       throw new HttpsError(
         "invalid-argument",
@@ -683,6 +683,51 @@ export const searchCreators = onCall(
         });
         console.log(
           `[Search] Budget soft-penalty applied (limit=${intent.budgetLimit}); kept ${vectorResults.length}/${preBudget} candidates.`,
+        );
+      }
+
+      // 🚀 PHASE C.3: AI-VERIFIED COMPETENCY BOOST
+      // Harness the "provenCompetencies" field to reward creators whose
+      // portfolio artifacts actually demonstrate the requested skills.
+      const querySkills = (intent.skills || []).map((s: string) =>
+        s.toLowerCase(),
+      );
+
+      vectorResults = vectorResults.map((r) => {
+        const proven = r.data.provenCompetencies?.proven_skills || [];
+        const quality = r.data.provenCompetencies?.visual_quality_score || 0.5;
+        let boost = 1.0;
+
+        // 1. Skill Boost: Check intersection between query and proven skills.
+        const matches = querySkills.filter((qs: string) =>
+          proven.some((ps: string) => ps.toLowerCase().includes(qs)),
+        );
+
+        if (matches.length > 0) {
+          boost = 1.4; // Strong multiplier for verified evidence
+        } else if (querySkills.length > 0) {
+          // 2. Claim Penalty: Creator claims the skill but Vision found no proof.
+          // Soft penalty to prioritize proven peers.
+          boost = 0.8;
+        }
+
+        // 3. Quality Multiplier: Minor push for high professionalism.
+        const qualityBoost = 1.0 + quality * 0.1;
+
+        return { ...r, rawScore: r.rawScore * boost * qualityBoost };
+      });
+
+      // Optional hard filter if user requested ONLY verified matches
+      if (onlyVerified) {
+        const preVerified = vectorResults.length;
+        vectorResults = vectorResults.filter((r) => {
+          const proven = r.data.provenCompetencies?.proven_skills || [];
+          return querySkills.some((qs: string) =>
+            proven.some((ps: string) => ps.toLowerCase().includes(qs)),
+          );
+        });
+        console.log(
+          `[Search] OnlyVerified filter applied: ${preVerified} -> ${vectorResults.length} candidate(s).`,
         );
       }
 

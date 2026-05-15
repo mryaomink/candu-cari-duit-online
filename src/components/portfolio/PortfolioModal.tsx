@@ -238,16 +238,75 @@ export default function PortfolioModal() {
                   <p style={{ lineHeight: 1.7, color: '#cbd5e1', fontSize: 15, marginBottom: 24 }}>
                     "{creator.bio || 'Kreator profesional lokal siap melayani kebutuhan visual Anda.'}"
                   </p>
+
+                  {creator.provenCompetencies && (
+                    <div style={{ marginBottom: 24, padding: 16, background: 'rgba(59, 130, 246, 0.05)', borderRadius: 16, border: '1px solid rgba(59, 130, 246, 0.1)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          🔬 AI Portfolio Analysis
+                        </div>
+                        <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                          Verified by Gemini Vision
+                        </div>
+                      </div>
+
+                      {/* Quality Meter */}
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+                          <span style={{ color: '#cbd5e1' }}>Kualitas Portofolio</span>
+                          <span style={{ color: '#fff', fontWeight: 700 }}>{Math.round(creator.provenCompetencies.visual_quality_score * 100)}%</span>
+                        </div>
+                        <div style={{ height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden' }}>
+                          <div style={{ 
+                            height: '100%', 
+                            width: `${creator.provenCompetencies.visual_quality_score * 100}%`, 
+                            background: 'linear-gradient(to right, #3b82f6, #60a5fa)',
+                            borderRadius: 2
+                          }} />
+                        </div>
+                      </div>
+
+                      {/* Style Tags */}
+                      {creator.provenCompetencies.style_tags.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {creator.provenCompetencies.style_tags.map(tag => (
+                            <span key={tag} style={{ fontSize: 10, background: 'rgba(255,255,255,0.08)', color: '#94a3b8', padding: '2px 8px', borderRadius: 4, textTransform: 'capitalize' }}>
+                              #{tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   
                   <h4 style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-text-muted)', marginBottom: 12 }}>
                     Spesialisasi Utama
                   </h4>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {creator.skills.length > 0 ? creator.skills.map(s => (
-                      <span key={s} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', padding: '6px 12px', borderRadius: 8, fontSize: 13, color: '#e2e8f0' }}>
-                        {s}
-                      </span>
-                    )) : <span style={{ fontSize: 13, color: 'gray' }}>Belum memasukkan skill</span>}
+                    {creator.skills.length > 0 ? creator.skills.map(s => {
+                      const isProven = creator.provenCompetencies?.proven_skills?.some(
+                        ps => ps.toLowerCase() === s.toLowerCase()
+                      );
+                      return (
+                        <span 
+                          key={s} 
+                          style={{ 
+                            background: isProven ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255,255,255,0.05)', 
+                            border: isProven ? '1px solid rgba(34, 197, 94, 0.3)' : '1px solid rgba(255,255,255,0.1)', 
+                            padding: '6px 12px', 
+                            borderRadius: 8, 
+                            fontSize: 13, 
+                            color: isProven ? '#4ade80' : '#e2e8f0',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6
+                          }}
+                        >
+                          {isProven && <span style={{ fontSize: 14 }}>✓</span>}
+                          {s}
+                        </span>
+                      );
+                    }) : <span style={{ fontSize: 13, color: 'gray' }}>Belum memasukkan skill</span>}
                   </div>
                 </div>
               )}

@@ -47,6 +47,9 @@ function CreatorCard({ node }: { node: RadarNode }) {
             {node.creator.isVerified && (
               <span className="badge badge-primary" style={{ fontSize: 10 }}>✓ Terverifikasi</span>
             )}
+            {node.creator.provenCompetencies && node.creator.provenCompetencies.visual_quality_score >= 0.8 && (
+              <span className="badge" style={{ fontSize: 10, background: 'linear-gradient(45deg, #FFD700, #FFA500)', color: '#000', fontWeight: 800 }}>✨ Kualitas Tinggi</span>
+            )}
             {node.creator.tier !== 'free' && (
               <span style={{ fontSize: 12 }} title={tierCfg.label}>{tierCfg.badge}</span>
             )}
@@ -75,11 +78,30 @@ function CreatorCard({ node }: { node: RadarNode }) {
 
       {/* Skills Overview */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {node.creator.skills.slice(0, 3).map((skill, i) => (
-          <span key={i} className="badge" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--color-text-secondary)', fontSize: 11, padding: '3px 8px' }}>
-            {skill}
-          </span>
-        ))}
+        {node.creator.skills.slice(0, 3).map((skill, i) => {
+          const isProven = node.creator.provenCompetencies?.proven_skills?.some(
+            ps => ps.toLowerCase() === skill.toLowerCase()
+          );
+          return (
+            <span 
+              key={i} 
+              className="badge" 
+              style={{ 
+                background: isProven ? 'rgba(34, 197, 94, 0.15)' : 'rgba(255,255,255,0.05)', 
+                color: isProven ? '#4ade80' : 'var(--color-text-secondary)', 
+                fontSize: 11, 
+                padding: '3px 8px',
+                border: isProven ? '1px solid rgba(34, 197, 94, 0.3)' : '1px solid transparent',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4
+              }}
+            >
+              {isProven && <span style={{ fontSize: 10 }}>✓</span>}
+              {skill}
+            </span>
+          );
+        })}
         {node.creator.skills.length > 3 && (
           <span style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center' }}>+{node.creator.skills.length - 3} more</span>
         )}

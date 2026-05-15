@@ -71,14 +71,15 @@ export async function nlpSearch(
   clientLat: number,
   clientLng: number,
   city: string = "Indonesia",
-  excludeUid?: string
+  excludeUid?: string,
+  onlyVerified: boolean = false
 ): Promise<{ nodes: RadarNode[]; insights: SearchAiInsights | null; intent: ExtractedSearchIntent | null }> {
   const searchFn = httpsCallable<
-    { prompt: string; limit: number; city: string },
+    { prompt: string; limit: number; city: string; onlyVerified?: boolean },
     SearchCreatorsResponse
   >(functions, 'searchCreators');
 
-  const result = await searchFn({ prompt, limit: 20, city });
+  const result = await searchFn({ prompt, limit: 20, city, onlyVerified });
   let creators: RawCreator[] = result.data.data || [];
   const insights: SearchAiInsights | null = result.data.aiInsights || null;
   const intent: ExtractedSearchIntent | null = result.data.extractedIntent || null;
